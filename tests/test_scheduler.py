@@ -7,8 +7,7 @@ import pytest
 import respx
 
 from app import audit
-from app.models import AnalysisStatus, Consents, ModuleResult, ModuleStatus, Report, Severity
-from app.models import Finding
+from app.models import AnalysisStatus, Consents, Finding, ModuleResult, ModuleStatus, Report, Severity
 from app.scheduler import Scheduler
 from app.watchlist import next_run
 
