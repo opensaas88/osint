@@ -29,19 +29,51 @@ SEARCH_URL = "https://api.ransomware.live/v2/searchvictims/{keyword}"
 #: Champs conservés d'une victime revendiquée (whitelist : pas d'URL de fuite).
 VICTIM_FIELDS = ("victim", "domain", "group", "attackdate", "discovered", "country", "activity")
 
+#: Valeurs de remplissage rencontrées dans le champ « domain » des sites de fuite
+#: lorsque le domaine réel est inconnu. Observé en conditions réelles : trois
+#: victimes sans aucun rapport entre elles portaient toutes « example.com ».
+#:
+#: La liste se limite volontairement aux noms réservés par la norme (RFC 2606 et
+#: RFC 6761), qui ne peuvent désigner aucune organisation réelle, et aux marqueurs
+#: explicites d'absence de valeur. Y ajouter des domaines réellement enregistrables
+#: — « domain.com », « test.com » — ferait taire une revendication authentique
+#: visant leur propriétaire, ce qui serait bien plus grave qu'un faux positif.
+DOMAINES_BOUCHE_TROU = frozenset({
+    "example.com", "example.org", "example.net", "example.edu",
+    "domain.tld", "localhost", "unknown", "none", "null", "n/a", "na", "-", "",
+})
+
 
 def normalise(value: str | None) -> str:
     return (value or "").strip().lower().rstrip(".")
 
 
 def classify_match(victim: dict[str, Any], domain: str, organisation: str) -> str | None:
-    """Qualifie la correspondance : « exact », « apparente » ou None (hors sujet)."""
+    """Qualifie la correspondance : « exact », « apparente » ou None (hors sujet).
+
+    La qualification est volontairement prudente. Deux pièges ont été rencontrés
+    sur des données réelles :
+
+    * certains sites de fuite renseignent un domaine de remplissage quand le vrai
+      est inconnu : il ne doit jamais valoir correspondance exacte ;
+    * comparer le domaine analysé au domaine de la victime dans le sens « je suis
+      un sous-domaine de la victime » fait correspondre n'importe quel domaine en
+      « .com » à une fiche dont le champ domaine vaut « com ». Ce sens est donc
+      traité comme une simple ressemblance, à confirmer par un humain.
+    """
     victim_domain = normalise(victim.get("domain"))
-    if victim_domain:
-        if victim_domain == domain:
+    if victim_domain and victim_domain not in DOMAINES_BOUCHE_TROU:
+        # Le domaine de la victime est le domaine analysé, ou l'un de ses sous-domaines.
+        if victim_domain == domain or victim_domain.endswith(f".{domain}"):
             return "exact"
-        if victim_domain.endswith(f".{domain}") or domain.endswith(f".{victim_domain}"):
-            return "exact"
+        # Sens inverse : le domaine analysé semble dépendre de celui de la victime.
+        # Exigé : au moins deux étiquettes côté victime, et une parenté stricte.
+        if (
+            victim_domain.count(".") >= 1
+            and domain.endswith(f".{victim_domain}")
+            and domain.count(".") > victim_domain.count(".")
+        ):
+            return "apparente"
 
     name = normalise(victim.get("victim"))
     if organisation and len(organisation) >= 4 and name:

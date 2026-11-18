@@ -146,6 +146,7 @@ class HttpClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         data: dict[str, Any] | None = None,
+        content: str | bytes | None = None,
         timeout: float | None = None,
         follow_redirects: bool | None = None,
         use_cache: bool = True,
@@ -177,6 +178,8 @@ class HttpClient:
                 kwargs: dict[str, Any] = {}
                 if follow_redirects is not None:
                     kwargs["follow_redirects"] = follow_redirects
+                if content is not None:
+                    kwargs["content"] = content
                 response = await self.client.request(
                     method, url, params=params, headers=headers, data=data,
                     timeout=timeout or self.settings.http_timeout, **kwargs,

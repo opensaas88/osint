@@ -14,21 +14,161 @@ from typing import Any
 
 from .watchlist import format_alert_text
 
+#: Couleurs de gravité, alignées sur la palette des rapports.
+COULEURS = {
+    "critique": "D03B3B",
+    "eleve": "EC835A",
+    "moyen": "FAB219",
+    "faible": "6B6A64",
+    "info": "B4B2AB",
+}
+
+
+def detect_webhook_format(url: str) -> str:
+    """Devine le format attendu à partir de l'hôte du webhook.
+
+    Chaque plateforme impose sa propre structure : poster le JSON brut de
+    DomainExposure sur un webhook Slack renvoie « invalid_payload ».
+    """
+    hote = url.split("://")[-1].split("/")[0].lower()
+    if "hooks.slack.com" in hote:
+        return "slack"
+    if hote.endswith("webhook.office.com"):
+        return "teams"
+    if "logic.azure.com" in hote or "powerplatform.com" in hote or "powerautomate" in hote:
+        return "teams_workflow"
+    if "discord.com" in hote or "discordapp.com" in hote:
+        return "discord"
+    return "json"
+
+
+def _entete(payload: dict[str, Any]) -> str:
+    score = payload["score"]
+    avant = (
+        f"{score['avant']} ({score['note_avant']}) → "
+        if score["avant"] is not None
+        else ""
+    )
+    return (
+        f"{payload['client']} — score {avant}{score['apres']} ({score['note_apres']})"
+    )
+
+
+def _lignes_alertes(payload: dict[str, Any]) -> list[str]:
+    return [f"[{a['gravite']}] {a['message']}" for a in payload["alertes"]]
+
+
+def _gravite_max(payload: dict[str, Any]) -> str:
+    for gravite in ("critique", "eleve", "moyen", "faible", "info"):
+        if any(a["gravite"] == gravite for a in payload["alertes"]):
+            return gravite
+    return "info"
+
+
+def _mandat(payload: dict[str, Any]) -> str:
+    mandat = payload["mandat"]
+    reference = f", réf. {mandat['reference']}" if mandat.get("reference") else ""
+    return (
+        f"Analyse passive · mandat attesté par {mandat['atteste_par']} le "
+        f"{(mandat['le'] or '')[:10]}{reference} · analyse {payload['analyse_id']}"
+    )
+
+
+def build_webhook_body(format_: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Met la notification au format attendu par la plateforme destinataire."""
+    entete = _entete(payload)
+    lignes = _lignes_alertes(payload)
+    gravite = _gravite_max(payload)
+    couleur = COULEURS[gravite]
+    domaine = payload["domaine"]
+
+    if format_ == "slack":
+        return {
+            "text": f"DomainExposure — {entete}",
+            "blocks": [
+                {"type": "header",
+                 "text": {"type": "plain_text", "text": entete[:150]}},
+                {"type": "section",
+                 "text": {"type": "mrkdwn",
+                          "text": f"*{domaine}*\n" + "\n".join(f"• {ligne}" for ligne in lignes)}},
+                {"type": "context",
+                 "elements": [{"type": "mrkdwn", "text": _mandat(payload)}]},
+            ],
+        }
+
+    if format_ == "teams":
+        return {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "themeColor": couleur,
+            "summary": f"DomainExposure — {entete}",
+            "title": entete,
+            "text": domaine,
+            "sections": [
+                {"facts": [
+                    {"name": a["gravite"], "value": a["message"]} for a in payload["alertes"]
+                ]},
+                {"text": _mandat(payload)},
+            ],
+        }
+
+    if format_ == "teams_workflow":
+        return {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                        {"type": "TextBlock", "size": "Medium", "weight": "Bolder",
+                         "text": entete, "wrap": True},
+                        {"type": "TextBlock", "text": domaine, "isSubtle": True, "wrap": True},
+                        {"type": "FactSet", "facts": [
+                            {"title": a["gravite"], "value": a["message"]}
+                            for a in payload["alertes"]
+                        ]},
+                        {"type": "TextBlock", "text": _mandat(payload), "isSubtle": True,
+                         "wrap": True, "size": "Small"},
+                    ],
+                },
+            }],
+        }
+
+    if format_ == "discord":
+        return {
+            "content": f"**DomainExposure** — {entete}",
+            "embeds": [{
+                "title": domaine,
+                "description": "\n".join(f"• {ligne}" for ligne in lignes),
+                "color": int(couleur, 16),
+                "footer": {"text": _mandat(payload)[:2048]},
+            }],
+        }
+
+    return payload  # format générique : la charge utile complète
+
 
 async def send_webhook(http, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Poste la notification en JSON. Compatible Slack, Teams, n8n et consorts."""
+    """Poste la notification, mise au format de la plateforme destinataire."""
+    format_ = detect_webhook_format(url)
+    corps = build_webhook_body(format_, payload)
     resultat = await http.request(
         "webhook",
         url,
         method="POST",
         headers={"content-type": "application/json"},
-        data=json.dumps(payload, ensure_ascii=False),
+        content=json.dumps(corps, ensure_ascii=False).encode("utf-8"),
         use_cache=False,
         retries=2,
     )
     return {
         "canal": "webhook",
-        "cible": url.split("://")[-1].split("/")[0],  # hôte seul : pas de jeton dans les journaux
+        "format": format_,
+        # Hôte seul : l'URL d'un webhook est un secret, elle n'entre pas dans les journaux.
+        "cible": url.split("://")[-1].split("/")[0],
         "succes": resultat.ok,
         "detail": None if resultat.ok else resultat.describe_error(),
     }

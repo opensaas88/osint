@@ -327,12 +327,27 @@ Après chaque analyse planifiée, le résultat est comparé au précédent. Une 
 
 Une amélioration ne déclenche jamais d'alerte, et un constat résolu non plus.
 
-Deux canaux, tous deux optionnels et indépendants :
+Deux canaux, tous deux optionnels et indépendants.
 
-- **Webhook** : un POST JSON vers l'URL de votre choix (Slack, Teams, n8n…). Aucun
-  secret à configurer.
-- **Courriel** : via votre serveur SMTP (`SMTP_HOST` et suivants). `SMTP_PASSWORD` est
-  un secret, à traiter comme tel.
+**Webhook.** Le format est déduit de l'hôte de l'URL : chaque plateforme impose sa
+propre structure, et poster le JSON brut de DomainExposure sur un webhook Slack
+renvoie `invalid_payload`.
+
+| Hôte détecté | Format émis | Où obtenir l'URL |
+|---|---|---|
+| `hooks.slack.com` | Block Kit (`text` + `blocks`) | Slack → application « Incoming Webhooks » → *Add New Webhook to Workspace* |
+| `*.webhook.office.com` | MessageCard | Teams → canal → *Connecteurs* → *Webhook entrant* |
+| `*.logic.azure.com` | Carte adaptative | Teams → canal → *Workflows* → *Publier dans un canal quand une requête webhook est reçue* |
+| `discord.com/api/webhooks` | Embed coloré par gravité | Discord → paramètres du salon → *Intégrations* → *Webhooks* |
+| tout autre hôte | JSON complet de l'alerte | n8n, Zapier, votre propre endpoint |
+
+> **L'URL d'un webhook est un secret** : quiconque la détient peut publier dans votre
+> canal. Saisissez-la dans le formulaire du portefeuille, jamais dans un ticket ou un
+> message. Elle est stockée dans votre base SQLite locale, et seul l'**hôte** apparaît
+> dans les journaux de l'application — jamais le jeton.
+
+**Courriel.** Via votre serveur SMTP (`SMTP_HOST` et suivants). `SMTP_PASSWORD` est un
+secret, à traiter comme tel.
 
 Une notification en échec n'interrompt jamais l'analyse : l'échec est journalisé et
 l'exécution se poursuit.
