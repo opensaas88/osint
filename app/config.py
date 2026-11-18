@@ -72,6 +72,20 @@ class Settings(BaseSettings):
     crtsh_timeout: float = 60.0
     user_agent: str = "DomainExposure/1.0 (outil d'audit passif; +https://localhost)"
 
+    # --- Surveillance planifiée ---
+    scheduler_enabled: bool = True
+    scheduler_tick_seconds: int = 300
+    scheduler_concurrency: int = 2
+    alert_score_drop: int = 5
+
+    # --- Notifications par courriel (facultatif) ---
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_starttls: bool = True
+
     # --- Modules ---
     typo_max_permutations: int = 200
     subdomain_resolve_limit: int = 150

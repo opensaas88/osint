@@ -56,6 +56,9 @@ def settings(tmp_path: Path) -> Settings:
         operator="pytest",
         typo_max_permutations=20,
         subdomain_resolve_limit=10,
+        # L'ordonnanceur est piloté explicitement par les tests qui le concernent :
+        # aucune tâche de fond ne doit s'exécuter à l'improviste.
+        scheduler_enabled=False,
     )
 
 

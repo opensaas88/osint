@@ -320,6 +320,132 @@ function renderModuleCard(module) {
   </details>`;
 }
 
+/* ----------------------------------------------------------- portefeuille - */
+function tendanceHtml(valeur) {
+  if (valeur === null || valeur === undefined || valeur === 0) {
+    return `<span class="muted">—</span>`;
+  }
+  const hausse = valeur > 0;
+  return `<span style="color:${hausse ? "var(--good)" : "var(--critique)"};font-weight:600"
+    title="${hausse ? "Amélioration" : "Dégradation"} depuis l'analyse précédente">
+    ${hausse ? "▲ +" : "▼ "}${valeur}</span>`;
+}
+
+function dateCourte(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("fr-FR",
+    { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
+async function loadPortefeuille() {
+  let payload;
+  try {
+    const reponse = await fetch("/api/watchlist");
+    if (!reponse.ok) return;
+    payload = await reponse.json();
+  } catch (exc) { return; }
+
+  const o = payload.ordonnanceur;
+  $("ordonnanceur").textContent = o.actif
+    ? `Ordonnanceur actif · vérification toutes les ${Math.round(o.periode_secondes / 60)} min` +
+      ` · alerte dès -${o.seuil_alerte_points} points` +
+      (o.courriel_configure ? " · courriel configuré" : " · webhook uniquement")
+    : "Ordonnanceur désactivé (SCHEDULER_ENABLED)";
+
+  const lignes = payload.domaines;
+  if (!lignes.length) {
+    $("portefeuille").innerHTML =
+      `<p class="muted text-sm italic">Aucun domaine suivi pour le moment.</p>`;
+    return;
+  }
+
+  $("portefeuille").innerHTML = `<div class="table-wrap"><table class="data" style="min-width:720px">
+    <thead><tr><th>Client</th><th>Domaine</th><th>Score</th><th class="num">Note</th>
+      <th class="num">Tendance</th><th>Constats</th><th>Dernière</th><th>Prochaine</th>
+      <th></th></tr></thead>
+    <tbody>${lignes.map((l) => {
+      const style = bandStyle(l.score);
+      const graves = (l.constats.critique || 0) + (l.constats.eleve || 0);
+      return `<tr${l.actif ? "" : ' style="opacity:.55"'}>
+        <td><strong>${esc(l.client)}</strong>${l.actif ? "" : " <span class='muted'>(en pause)</span>"}</td>
+        <td class="muted">${esc(l.domaine)}</td>
+        <td style="min-width:110px">${l.score === null ? '<span class="muted text-xs">jamais analysé</span>'
+          : meter(l.score, style) + `<span class="muted text-xs">${l.score}/100</span>`}</td>
+        <td class="num"><strong>${esc(l.note || "—")}</strong></td>
+        <td class="num">${tendanceHtml(l.tendance)}</td>
+        <td>${graves
+          ? `<span style="color:${SEVERITIES.critique.color}">◆ ${l.constats.critique || 0}</span>
+             <span style="color:${SEVERITIES.eleve.color}">▲ ${l.constats.eleve || 0}</span>`
+          : '<span class="muted">—</span>'}</td>
+        <td class="muted">${dateCourte(l.derniere_analyse)}</td>
+        <td class="muted">${l.intervalle_heures ? dateCourte(l.prochaine_analyse) : "manuel"}</td>
+        <td class="whitespace-nowrap">
+          <button class="pf-run card rounded px-2 py-1 text-xs" data-id="${esc(l.id)}"
+                  title="Analyser maintenant">Analyser</button>
+          <button class="pf-del card rounded px-2 py-1 text-xs" data-id="${esc(l.id)}"
+                  data-client="${esc(l.client)}" title="Retirer du portefeuille">Retirer</button>
+        </td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+
+  document.querySelectorAll(".pf-run").forEach((bouton) =>
+    bouton.addEventListener("click", async () => {
+      bouton.disabled = true;
+      bouton.textContent = "Analyse…";
+      await fetch(`/api/watchlist/${encodeURIComponent(bouton.dataset.id)}/run`,
+                  { method: "POST" });
+      await loadPortefeuille();
+      await loadHistory(null);
+    }));
+
+  document.querySelectorAll(".pf-del").forEach((bouton) =>
+    bouton.addEventListener("click", async () => {
+      if (!confirm(`Retirer « ${bouton.dataset.client} » du portefeuille ? `
+          + `Le mandat est révoqué et les analyses planifiées cessent.`)) return;
+      await fetch(`/api/watchlist/${encodeURIComponent(bouton.dataset.id)}`, { method: "DELETE" });
+      await loadPortefeuille();
+    }));
+}
+
+async function ajouterAuPortefeuille() {
+  const erreur = $("w-error");
+  erreur.classList.add("hidden");
+  const corps = {
+    domain: $("w-domain").value.trim(),
+    label: $("w-label").value.trim() || null,
+    interval_hours: Number($("w-interval").value),
+    authorization: $("w-auth").checked,
+    passive_only: $("w-passive").checked,
+    domain_verified: $("w-verified").checked,
+    mandate_reference: $("w-reference").value.trim() || null,
+    notify_webhook: $("w-webhook").value.trim() || null,
+    notify_email: $("w-email").value.trim() || null,
+  };
+  if (!corps.authorization || !corps.passive_only) {
+    erreur.textContent = "Les deux attestations obligatoires valent mandat permanent : "
+      + "elles doivent être cochées.";
+    erreur.classList.remove("hidden");
+    return;
+  }
+  const reponse = await fetch("/api/watchlist", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(corps),
+  });
+  const payload = await reponse.json().catch(() => ({}));
+  if (!reponse.ok) {
+    const detail = payload.detail || {};
+    erreur.textContent = [detail.erreur || "Inscription refusée.", detail.aide]
+      .filter(Boolean).join(" ");
+    erreur.classList.remove("hidden");
+    return;
+  }
+  ["w-domain", "w-label", "w-reference", "w-webhook", "w-email"].forEach((id) => ($(id).value = ""));
+  $("w-auth").checked = $("w-passive").checked = $("w-verified").checked = false;
+  await loadPortefeuille();
+}
+
 /* ------------------------------------------------------------ historique - */
 async function loadHistory(domain) {
   const url = domain ? `/api/analyses?domain=${encodeURIComponent(domain)}` : "/api/analyses";
@@ -460,6 +586,7 @@ async function launch() {
     $("launch").disabled = false;
     source.close();
     loadHistory(null);
+    loadPortefeuille();
     try {
       const reponse = await fetch(
         `/api/analyses/${encodeURIComponent(state.analysisId)}/plan?limite=12`);
@@ -488,5 +615,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.key === "Enter") launch();
   });
   $("compare").addEventListener("click", runComparison);
+  $("w-add").addEventListener("click", ajouterAuPortefeuille);
   loadHistory(null);
+  loadPortefeuille();
 });

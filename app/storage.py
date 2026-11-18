@@ -37,6 +37,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
 
+CREATE TABLE IF NOT EXISTS watched_domains (
+    id                TEXT PRIMARY KEY,
+    domain            TEXT NOT NULL UNIQUE,
+    label             TEXT,
+    interval_hours    INTEGER NOT NULL DEFAULT 168,
+    active            INTEGER NOT NULL DEFAULT 1,
+    domain_verified   INTEGER NOT NULL DEFAULT 0,
+    -- Mandat permanent : qui atteste de l'autorisation, quand, et sous quelle
+    -- référence contractuelle. Chaque analyse planifiée s'y réfère.
+    mandate_actor     TEXT NOT NULL,
+    mandate_at        TEXT NOT NULL,
+    mandate_reference TEXT,
+    notify_webhook    TEXT,
+    notify_email      TEXT,
+    next_run_at       TEXT,
+    last_run_at       TEXT,
+    last_analysis_id  TEXT,
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watched_next ON watched_domains (active, next_run_at);
+
 CREATE TABLE IF NOT EXISTS http_cache (
     key        TEXT PRIMARY KEY,
     source     TEXT NOT NULL,
@@ -178,6 +199,111 @@ class Store:
 
     async def list_analyses(self, domain: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._list_analyses_sync, domain, limit)
+
+    # -- domaines suivis ----------------------------------------------------
+    def _watch_upsert_sync(self, entry: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO watched_domains (id, domain, label, interval_hours, active,"
+                " domain_verified, mandate_actor, mandate_at, mandate_reference,"
+                " notify_webhook, notify_email, next_run_at, last_run_at, last_analysis_id,"
+                " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(domain) DO UPDATE SET"
+                " label=excluded.label, interval_hours=excluded.interval_hours,"
+                " active=excluded.active, domain_verified=excluded.domain_verified,"
+                " mandate_actor=excluded.mandate_actor, mandate_at=excluded.mandate_at,"
+                " mandate_reference=excluded.mandate_reference,"
+                " notify_webhook=excluded.notify_webhook, notify_email=excluded.notify_email,"
+                " next_run_at=excluded.next_run_at",
+                (
+                    entry["id"], entry["domain"], entry.get("label"),
+                    int(entry.get("interval_hours") or 0), int(bool(entry.get("active", True))),
+                    int(bool(entry.get("domain_verified", False))),
+                    entry["mandate_actor"], entry["mandate_at"], entry.get("mandate_reference"),
+                    entry.get("notify_webhook"), entry.get("notify_email"),
+                    entry.get("next_run_at"), entry.get("last_run_at"),
+                    entry.get("last_analysis_id"), entry.get("created_at") or _iso(_utcnow()),
+                ),
+            )
+
+    async def watch_upsert(self, entry: dict[str, Any]) -> None:
+        await asyncio.to_thread(self._watch_upsert_sync, entry)
+
+    def _watch_list_sync(self, actifs_seulement: bool) -> list[dict[str, Any]]:
+        requete = "SELECT * FROM watched_domains"
+        if actifs_seulement:
+            requete += " WHERE active = 1"
+        requete += " ORDER BY label IS NULL, label, domain"
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(requete).fetchall()]
+
+    async def watch_list(self, actifs_seulement: bool = False) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._watch_list_sync, actifs_seulement)
+
+    def _watch_get_sync(self, identifiant: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM watched_domains WHERE id = ? OR domain = ?",
+                (identifiant, identifiant),
+            ).fetchone()
+        return dict(row) if row else None
+
+    async def watch_get(self, identifiant: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._watch_get_sync, identifiant)
+
+    def _watch_delete_sync(self, identifiant: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM watched_domains WHERE id = ? OR domain = ?",
+                (identifiant, identifiant),
+            )
+            return cur.rowcount
+
+    async def watch_delete(self, identifiant: str) -> int:
+        return await asyncio.to_thread(self._watch_delete_sync, identifiant)
+
+    def _watch_mark_run_sync(
+        self, identifiant: str, analysis_id: str, last_run: str, next_run: str | None
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE watched_domains SET last_run_at = ?, next_run_at = ?,"
+                " last_analysis_id = ? WHERE id = ?",
+                (last_run, next_run, analysis_id, identifiant),
+            )
+
+    async def watch_mark_run(
+        self, identifiant: str, analysis_id: str, last_run: str, next_run: str | None
+    ) -> None:
+        await asyncio.to_thread(
+            self._watch_mark_run_sync, identifiant, analysis_id, last_run, next_run
+        )
+
+    def _watch_due_sync(self, maintenant: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM watched_domains WHERE active = 1 AND interval_hours > 0"
+                " AND (next_run_at IS NULL OR next_run_at <= ?) ORDER BY next_run_at",
+                (maintenant,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def watch_due(self) -> list[dict[str, Any]]:
+        """Domaines suivis dont l'échéance d'analyse est atteinte."""
+        return await asyncio.to_thread(self._watch_due_sync, _iso(_utcnow()))
+
+    def _last_two_reports_sync(self, domain: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT report_json FROM analyses WHERE domain = ? AND status = 'done'"
+                " ORDER BY started_at DESC LIMIT 2",
+                (domain,),
+            ).fetchall()
+        return [json.loads(row["report_json"]) for row in rows]
+
+    async def last_two_reports(self, domain: str) -> list[dict[str, Any]]:
+        """Les deux dernières analyses abouties d'un domaine, la plus récente d'abord."""
+        return await asyncio.to_thread(self._last_two_reports_sync, domain)
 
     # -- journal d'audit ----------------------------------------------------
     def _log_sync(self, entry: dict[str, Any]) -> None:

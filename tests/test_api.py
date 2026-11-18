@@ -207,3 +207,102 @@ def test_plan_de_remediation_expose(client, settings):
 def test_plan_dune_analyse_inconnue(client):
     assert client.get("/api/analyses/inexistante/plan").status_code == 404
     assert client.post("/api/analyses/inexistante/simulate", json={"codes": []}).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Portefeuille surveillé
+# ---------------------------------------------------------------------------
+
+def test_inscription_refusee_sans_mandat(client):
+    """Les attestations valent mandat permanent : elles ne peuvent pas être omises."""
+    reponse = client.post("/api/watchlist", json={"domain": "exemple.fr"})
+    assert reponse.status_code == 403
+    assert set(reponse.json()["detail"]["manquantes"]) == {"authorization", "passive_only"}
+    actions = [e["action"] for e in client.get("/api/audit").json()["journal"]]
+    assert "analyse_refusee_consentement_manquant" in actions
+
+
+def test_inscription_domaine_invalide(client):
+    reponse = client.post(
+        "/api/watchlist",
+        json={"domain": "https://exemple.fr/x", "authorization": True, "passive_only": True},
+    )
+    assert reponse.status_code == 400
+
+
+def test_cycle_de_vie_dun_domaine_suivi(client):
+    creation = client.post("/api/watchlist", json={
+        "domain": "exemple.fr", "label": "Client A", "interval_hours": 168,
+        "authorization": True, "passive_only": True,
+        "mandate_reference": "contrat 42", "notify_webhook": "https://hook.exemple.fr/x",
+    })
+    assert creation.status_code == 201
+    identifiant = creation.json()["id"]
+    assert creation.json()["prochaine_analyse"] is not None
+
+    portefeuille = client.get("/api/watchlist").json()
+    ligne = portefeuille["domaines"][0]
+    assert ligne["client"] == "Client A"
+    assert ligne["domaine"] == "exemple.fr"
+    assert ligne["score"] is None  # jamais analysé
+    assert ligne["mandat"]["reference"] == "contrat 42"
+    assert ligne["notifications"] == {"webhook": True, "courriel": False}
+    assert portefeuille["ordonnanceur"]["seuil_alerte_points"] == 5
+
+    # Le mandat est journalisé à l'inscription.
+    journal = client.get("/api/audit").json()["journal"]
+    inscription = next(e for e in journal if e["action"] == "surveillance_ajout_mandat")
+    assert "contrat 42" in inscription["user_agent"]
+
+    modification = client.patch(
+        f"/api/watchlist/{identifiant}", json={"interval_hours": 0, "label": "Client B"}
+    )
+    assert modification.status_code == 200
+    assert modification.json()["prochaine_analyse"] is None
+    assert client.get("/api/watchlist").json()["domaines"][0]["client"] == "Client B"
+
+    assert client.delete(f"/api/watchlist/{identifiant}").status_code == 204
+    assert client.get("/api/watchlist").json()["domaines"] == []
+    actions = [e["action"] for e in client.get("/api/audit").json()["journal"]]
+    assert "surveillance_retrait" in actions
+
+
+def test_inscription_idempotente_sur_le_domaine(client):
+    for label in ("Premier", "Second"):
+        reponse = client.post("/api/watchlist", json={
+            "domain": "exemple.fr", "label": label, "interval_hours": 24,
+            "authorization": True, "passive_only": True,
+        })
+        assert reponse.status_code == 201
+    domaines = client.get("/api/watchlist").json()["domaines"]
+    assert len(domaines) == 1
+    assert domaines[0]["client"] == "Second"
+
+
+def test_actions_sur_un_domaine_inconnu(client):
+    assert client.patch("/api/watchlist/inexistant", json={"label": "x"}).status_code == 404
+    assert client.delete("/api/watchlist/inexistant").status_code == 404
+    assert client.post("/api/watchlist/inexistant/run").status_code == 404
+
+
+def test_analyse_immediate_dun_domaine_suivi(client, monkeypatch):
+    """Le bouton « Analyser » déclenche l'analyse hors échéance."""
+    import app.scheduler as scheduler_module
+
+    monkeypatch.setattr(scheduler_module, "Orchestrator", OrchestrateurFactice)
+    creation = client.post("/api/watchlist", json={
+        "domain": "exemple.fr", "authorization": True, "passive_only": True,
+        "interval_hours": 24,
+    })
+    identifiant = creation.json()["id"]
+
+    resultat = client.post(f"/api/watchlist/{identifiant}/run").json()
+    assert resultat["score"] == 72
+    assert resultat["domaine"] == "exemple.fr"
+
+    ligne = client.get("/api/watchlist").json()["domaines"][0]
+    assert ligne["score"] == 72
+    assert ligne["derniere_analyse"] is not None
+
+    actions = [e["action"] for e in client.get("/api/audit").json()["journal"]]
+    assert "analyse_planifiee" in actions

@@ -143,6 +143,11 @@ Tous les réglages se font dans `.env` (modèle commenté dans `.env.example`).
 | `AUDIT_RETENTION_DAYS` | `365` | Conservation du journal d'audit |
 | `DNS_BACKEND` | `auto` | `system`, `doh` ou `auto` (bascule automatique) |
 | `HTTP_TIMEOUT`, `HTTP_RETRIES` | `15.0`, `3` | Délais et nouvelles tentatives |
+| `SCHEDULER_ENABLED` | `true` | Analyses planifiées du portefeuille |
+| `SCHEDULER_TICK_SECONDS` | `300` | Fréquence de vérification des échéances |
+| `SCHEDULER_CONCURRENCY` | `2` | Analyses planifiées menées en parallèle |
+| `ALERT_SCORE_DROP` | `5` | Baisse de score déclenchant une alerte |
+| `SMTP_HOST`, `SMTP_PORT`… | — | Serveur d'envoi des alertes par courriel |
 | `TYPO_MAX_PERMUTATIONS` | `200` | Variantes testées par le module typosquatting |
 | `SUBDOMAIN_RESOLVE_LIMIT` | `150` | Sous-domaines résolus après dédoublonnage |
 
@@ -281,6 +286,62 @@ Le détail technique vient après.
   de garde, synthèse exécutive, détails techniques et annexe des sources.
 - **PDF** : même contenu, mis en page pour l'impression (WeasyPrint).
 
+### Portefeuille surveillé et analyses planifiées
+
+Un domaine inscrit au portefeuille est réanalysé automatiquement — quotidiennement,
+chaque semaine ou chaque mois — et le tableau de bord classe les domaines **du plus
+exposé au moins exposé**, avec la tendance depuis l'analyse précédente.
+
+| Client | Domaine | Score | Note | Tendance | Constats | Prochaine |
+|---|---|---|---|---|---|---|
+| Client A | exemple.fr | 40 | F | ▼ -20 | ◆ 1 ▲ 2 | demain |
+| Client B | autre.fr | 95 | A | ▲ +5 | — | dans 6 j |
+
+#### Le mandat permanent
+
+Une analyse planifiée pose une difficulté : **personne ne coche de case au moment où
+elle se déclenche**. La réponse retenue est le mandat permanent.
+
+À l'inscription d'un domaine, l'opérateur atteste — avec les mêmes deux cases
+obligatoires qu'une analyse ponctuelle — qu'il dispose d'une autorisation, et peut
+joindre une référence contractuelle. Cette attestation est journalisée, puis **rappelée
+dans le journal d'audit à chaque exécution automatique** :
+
+```
+analyse_planifiee  exemple.fr  operateur  « planifiee — mandat attesté par operateur
+                                            le 2026-01-15, réf. contrat 42 »
+```
+
+Retirer le domaine du portefeuille révoque le mandat et arrête les analyses ; le retrait
+est lui aussi journalisé.
+
+#### Alertes de régression
+
+Après chaque analyse planifiée, le résultat est comparé au précédent. Une alerte est
+émise si :
+
+- le score baisse d'au moins `ALERT_SCORE_DROP` points (5 par défaut) ;
+- la note se dégrade ;
+- un constat **critique** ou **élevé** apparaît, même à score constant ;
+- la toute première analyse d'un domaine révèle un constat critique.
+
+Une amélioration ne déclenche jamais d'alerte, et un constat résolu non plus.
+
+Deux canaux, tous deux optionnels et indépendants :
+
+- **Webhook** : un POST JSON vers l'URL de votre choix (Slack, Teams, n8n…). Aucun
+  secret à configurer.
+- **Courriel** : via votre serveur SMTP (`SMTP_HOST` et suivants). `SMTP_PASSWORD` est
+  un secret, à traiter comme tel.
+
+Une notification en échec n'interrompt jamais l'analyse : l'échec est journalisé et
+l'exécution se poursuit.
+
+> **Un seul processus.** L'ordonnanceur tourne dans le processus applicatif. Avec
+> plusieurs workers uvicorn, les analyses seraient dupliquées : la configuration livrée
+> n'en utilise qu'un, et `SCHEDULER_ENABLED=false` désactive l'ordonnanceur sur les
+> processus supplémentaires.
+
 ### Historique et comparaison
 
 Toutes les analyses sont conservées. Sélectionnez-en deux pour obtenir l'évolution
@@ -296,6 +357,11 @@ du score, les constats apparus, résolus et persistants.
 | `GET` | `/api/analyses/{id}/stream` | Flux d'événements SSE |
 | `GET` | `/api/analyses/{id}` | Rapport complet au format JSON |
 | `GET` | `/api/analyses?domain=` | Historique |
+| `GET` | `/api/watchlist` | Portefeuille consolidé et état de l'ordonnanceur |
+| `POST` | `/api/watchlist` | Inscrit un domaine (mandat permanent obligatoire) |
+| `PATCH` | `/api/watchlist/{id}` | Modifie périodicité, libellé, notifications |
+| `DELETE` | `/api/watchlist/{id}` | Révoque le mandat et arrête le suivi |
+| `POST` | `/api/watchlist/{id}/run` | Analyse immédiate, hors échéance |
 | `GET` | `/api/analyses/{id}/plan` | Plan de remédiation : actions, effort, gain, score projeté |
 | `POST` | `/api/analyses/{id}/simulate` | Score obtenu si les constats indiqués étaient corrigés |
 | `GET` | `/api/compare?a=&b=` | Comparaison de deux analyses |
@@ -439,6 +505,9 @@ app/
 ├── resolver.py        Résolution DNS : système ou DNS-over-HTTPS
 ├── httpclient.py      Cache 24 h, politesse, nouvelles tentatives
 ├── sanitize.py        Masquage et suppression des champs sensibles
+├── watchlist.py       Portefeuille, mandat permanent, détection de régression
+├── scheduler.py       Analyses planifiées
+├── notify.py          Alertes par webhook et par courriel
 ├── remediation.py     Effort, gain et projection de score
 ├── scoring.py         Pondérations et barème
 └── storage.py         SQLite : analyses, cache, journal d'audit

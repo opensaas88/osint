@@ -22,9 +22,11 @@ from .models import AnalysisStatus, Consents
 from .modules import MODULE_LABELS
 from .orchestrator import AnalysisChannel, Orchestrator, purge_expired
 from .remediation import build_plan, simulate
+from .scheduler import Scheduler
 from .scoring import CRITICAL_SCORE_CAP, GRADE_SCALE, MODULE_WEIGHTS
 from .storage import Store
 from .validation import InvalidDomain, normalize_domain
+from .watchlist import INTERVALLES, build_portfolio, next_run
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -41,6 +43,36 @@ class AnalysisRequest(BaseModel):
     domain_verified: bool = False
 
 
+class WatchRequest(BaseModel):
+    """Inscription d'un domaine au portefeuille surveillé.
+
+    Les deux attestations obligatoires sont les mêmes que pour une analyse
+    ponctuelle : elles valent ici **mandat permanent**, puisque les analyses
+    planifiées se déclencheront sans intervention humaine.
+    """
+
+    domain: str = Field(..., max_length=300)
+    label: str | None = Field(default=None, max_length=200)
+    interval_hours: int = Field(default=168, ge=0, le=8760)
+    authorization: bool = False
+    passive_only: bool = False
+    domain_verified: bool = False
+    mandate_reference: str | None = Field(default=None, max_length=200)
+    notify_webhook: str | None = Field(default=None, max_length=500)
+    notify_email: str | None = Field(default=None, max_length=500)
+
+
+class WatchUpdate(BaseModel):
+    """Modification d'un suivi existant. Le mandat, lui, ne se modifie pas."""
+
+    label: str | None = Field(default=None, max_length=200)
+    interval_hours: int | None = Field(default=None, ge=0, le=8760)
+    active: bool | None = None
+    domain_verified: bool | None = None
+    notify_webhook: str | None = Field(default=None, max_length=500)
+    notify_email: str | None = Field(default=None, max_length=500)
+
+
 class SimulationRequest(BaseModel):
     """Constats dont on veut simuler la correction."""
 
@@ -51,11 +83,17 @@ def create_app(settings=None, store=None) -> FastAPI:
     settings = settings or get_settings()
     store = store or Store(settings.db_path)
 
+    scheduler = Scheduler(settings, store)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await store.init()
         await purge_expired(store, settings)
-        yield
+        await scheduler.start()
+        try:
+            yield
+        finally:
+            await scheduler.stop()
 
     app = FastAPI(
         title="DomainExposure",
@@ -67,6 +105,7 @@ def create_app(settings=None, store=None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.store = store
+    app.state.scheduler = scheduler
     app.state.channels: OrderedDict[str, AnalysisChannel] = OrderedDict()
     app.state.tasks: dict[str, asyncio.Task] = {}
 
@@ -261,6 +300,121 @@ def create_app(settings=None, store=None) -> FastAPI:
         if (before.get("started_at") or "") > (after.get("started_at") or ""):
             before, after = after, before
         return compare_reports(before, after)
+
+    # -------------------------------------------------------- portefeuille --
+    @app.get("/api/watchlist")
+    async def portefeuille() -> dict[str, Any]:
+        """Vue consolidée du portefeuille, du domaine le plus exposé au moins exposé."""
+        suivis = await store.watch_list()
+        rapports = {
+            entree["domain"]: await store.last_two_reports(entree["domain"])
+            for entree in suivis
+        }
+        return {
+            "domaines": build_portfolio(suivis, rapports),
+            "intervalles": INTERVALLES,
+            "ordonnanceur": {
+                "actif": settings.scheduler_enabled,
+                "periode_secondes": settings.scheduler_tick_seconds,
+                "seuil_alerte_points": settings.alert_score_drop,
+                "derniere_passe": (
+                    scheduler.derniere_passe.isoformat() if scheduler.derniere_passe else None
+                ),
+                "courriel_configure": bool(settings.smtp_host),
+            },
+        }
+
+    @app.post("/api/watchlist", status_code=201)
+    async def surveiller(payload: WatchRequest, request: Request) -> dict[str, Any]:
+        consents = Consents(
+            authorization=payload.authorization,
+            passive_only=payload.passive_only,
+            domain_verified=payload.domain_verified,
+        )
+        client_ip = request.client.host if request.client else None
+
+        try:
+            domaine = normalize_domain(payload.domain)
+        except InvalidDomain as exc:
+            raise HTTPException(
+                status_code=400, detail={"erreur": exc.reason, "aide": exc.hint}
+            ) from exc
+
+        if not consents.mandatory_granted:
+            await audit.record(
+                store, action=audit.ACTION_ANALYSE_REFUSEE, actor=settings.operator,
+                domain=domaine.ascii, consents=consents, client_ip=client_ip,
+                detail="inscription au portefeuille refusée",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "erreur": "Les attestations obligatoires valent mandat permanent pour les "
+                              "analyses planifiées : elles ne peuvent pas être omises.",
+                    "manquantes": consents.missing(),
+                },
+            )
+
+        existant = await store.watch_get(domaine.ascii)
+        maintenant = datetime.now(UTC)
+        entree = {
+            "id": existant["id"] if existant else uuid.uuid4().hex,
+            "domain": domaine.ascii,
+            "label": payload.label or domaine.unicode,
+            "interval_hours": payload.interval_hours,
+            "active": True,
+            "domain_verified": payload.domain_verified,
+            "mandate_actor": settings.operator,
+            "mandate_at": maintenant.isoformat(),
+            "mandate_reference": payload.mandate_reference,
+            "notify_webhook": payload.notify_webhook,
+            "notify_email": payload.notify_email,
+            "next_run_at": next_run(payload.interval_hours, maintenant),
+            "created_at": (existant or {}).get("created_at") or maintenant.isoformat(),
+        }
+        await store.watch_upsert(entree)
+        await audit.record(
+            store, action=audit.ACTION_SURVEILLANCE_AJOUT, actor=settings.operator,
+            domain=domaine.ascii, consents=consents, client_ip=client_ip,
+            detail=f"mandat permanent, réf. {payload.mandate_reference or 'non précisée'}, "
+                   f"périodicité {payload.interval_hours} h",
+        )
+        return {"id": entree["id"], "domaine": domaine.ascii,
+                "prochaine_analyse": entree["next_run_at"]}
+
+    @app.patch("/api/watchlist/{identifiant}")
+    async def modifier_surveillance(identifiant: str, payload: WatchUpdate) -> dict[str, Any]:
+        entree = await store.watch_get(identifiant)
+        if entree is None:
+            raise HTTPException(status_code=404, detail={"erreur": "domaine non suivi"})
+        modifications = payload.model_dump(exclude_none=True)
+        entree.update(modifications)
+        if "interval_hours" in modifications:
+            entree["next_run_at"] = next_run(int(modifications["interval_hours"]))
+        await store.watch_upsert(entree)
+        return {"id": entree["id"], "prochaine_analyse": entree.get("next_run_at")}
+
+    @app.delete("/api/watchlist/{identifiant}", status_code=204)
+    async def retirer_surveillance(identifiant: str, request: Request) -> Response:
+        entree = await store.watch_get(identifiant)
+        if entree is None:
+            raise HTTPException(status_code=404, detail={"erreur": "domaine non suivi"})
+        await store.watch_delete(identifiant)
+        await audit.record(
+            store, action=audit.ACTION_SURVEILLANCE_RETRAIT, actor=settings.operator,
+            domain=entree["domain"],
+            client_ip=request.client.host if request.client else None,
+            detail="mandat révoqué",
+        )
+        return Response(status_code=204)
+
+    @app.post("/api/watchlist/{identifiant}/run")
+    async def analyser_maintenant(identifiant: str) -> dict[str, Any]:
+        """Déclenche immédiatement l'analyse d'un domaine suivi, hors échéance."""
+        entree = await store.watch_get(identifiant)
+        if entree is None:
+            raise HTTPException(status_code=404, detail={"erreur": "domaine non suivi"})
+        return await scheduler.run_one(entree, declencheur="manuelle")
 
     # ----------------------------------------------------------- exports ----
     @app.get("/api/analyses/{analysis_id}/report.html", include_in_schema=False)

@@ -12,6 +12,10 @@ ACTION_ANALYSE_REFUSEE = "analyse_refusee_consentement_manquant"
 ACTION_ANALYSE_TERMINEE = "analyse_terminee"
 ACTION_EXPORT = "export_rapport"
 ACTION_PURGE = "purge_journal"
+ACTION_SURVEILLANCE_AJOUT = "surveillance_ajout_mandat"
+ACTION_SURVEILLANCE_RETRAIT = "surveillance_retrait"
+ACTION_ANALYSE_PLANIFIEE = "analyse_planifiee"
+ACTION_ALERTE = "alerte_regression"
 
 
 async def record(
@@ -24,6 +28,7 @@ async def record(
     client_ip: str | None = None,
     user_agent: str | None = None,
     analysis_id: str | None = None,
+    detail: str | None = None,
 ) -> None:
     """Ecrit une entree d'audit. Ne leve jamais : l'audit ne doit pas casser l'analyse."""
     entry = {
@@ -36,6 +41,9 @@ async def record(
         "user_agent": (user_agent or "")[:300] or None,
         "analysis_id": analysis_id,
     }
+    if detail:
+        # Le mandat invoqué pour une analyse planifiée est tracé avec elle.
+        entry["user_agent"] = f"{entry['user_agent'] or ''} | {detail}".strip(" |")[:300]
     try:
         await store.log_audit(entry)
     except Exception:  # pragma: no cover - l'audit ne doit jamais interrompre le service
