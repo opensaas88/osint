@@ -143,6 +143,8 @@ Tous les réglages se font dans `.env` (modèle commenté dans `.env.example`).
 | `AUDIT_RETENTION_DAYS` | `365` | Conservation du journal d'audit |
 | `DNS_BACKEND` | `auto` | `system`, `doh` ou `auto` (bascule automatique) |
 | `HTTP_TIMEOUT`, `HTTP_RETRIES` | `15.0`, `3` | Délais et nouvelles tentatives |
+| `BRAND_NAME`, `BRAND_COLOR` | `DomainExposure`, bleu | Identité affichée |
+| `BRAND_LOGO_PATH`, `BRAND_FOOTER` | — | Logo incorporé et mention de pied de page |
 | `SCHEDULER_ENABLED` | `true` | Analyses planifiées du portefeuille |
 | `SCHEDULER_TICK_SECONDS` | `300` | Fréquence de vérification des échéances |
 | `SCHEDULER_CONCURRENCY` | `2` | Analyses planifiées menées en parallèle |
@@ -193,7 +195,7 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 | 3 | Hygiène email | 20 | DNS (MX, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI) | non |
 | 4 | Hygiène DNS | 10 | RDAP (expiration et verrou du domaine), DNS (DNSSEC, NS, CAA), empreintes de reprise de sous-domaine | non |
 | 5 | Sous-domaines | 5 | crt.sh (Certificate Transparency, expiration des certificats) | non |
-| 6 | Services exposés | 15 | Shodan InternetDB, API Shodan | non (partiel) |
+| 6 | Services exposés | 15 | Shodan InternetDB, API Shodan, RDAP des registres d'adresses | non (partiel) |
 | 7 | TLS & en-têtes HTTP | 15 | Poignée de main TLS, requête web standard | non |
 | 8 | Typosquatting | 5 | dnstwist + résolution DNS | non |
 | 9 | Réputation | 5 | VirusTotal, URLhaus, AbuseIPDB | oui |
@@ -272,6 +274,40 @@ est affiché en priorité, car c'est lui qui décrit la progression réelle.
 
 L'effort est une estimation **paramétrable** dans `app/remediation.py` : un prestataire
 qui déploie DNSSEC en vingt minutes ajuste la table à son contexte.
+
+### Conséquences métier
+
+Chaque constat porte, en plus de son explication technique, **ce qu'il implique
+concrètement pour l'organisation et qui le subit** :
+
+> **2 enregistrements SPF publiés au lieu d'un seul**
+> *Un tiers peut envoyer des emails qui semblent venir de votre entreprise : fausse
+> facture, changement de coordonnées bancaires, demande urgente au nom d'un dirigeant.
+> Vos interlocuteurs n'ont aucun moyen de s'en apercevoir. Concerne vos clients, vos
+> fournisseurs et votre comptabilité.*
+
+Ces formulations sont centralisées dans `app/impacts.py` et **ne contiennent aucun
+chiffre** : une statistique citée de mémoire se démonétise au premier contrôle. Les
+renvois pointent vers Cybermalveillance.gouv.fr et la CNIL, où le lecteur trouvera
+les données à jour.
+
+### Évolution du score
+
+Dès la deuxième analyse d'un domaine, une courbe retrace son évolution — dans
+l'interface comme dans le rapport. L'échelle verticale est **fixée de 0 à 100** et
+jamais ajustée aux données : un cadrage automatique transformerait une variation de
+deux points en falaise.
+
+### Marque blanche
+
+Le rapport et l'interface portent votre identité : nom, couleur d'accent, logo et
+mention de pied de page (`BRAND_NAME`, `BRAND_COLOR`, `BRAND_LOGO_PATH`,
+`BRAND_FOOTER`).
+
+Le logo est **incorporé en base64** dans le rapport, qui reste donc un fichier
+autonome, lisible hors ligne et transmissible tel quel. Et la marque n'habille que
+les accents : **les couleurs de gravité ne sont jamais remplacées**, un constat
+critique reste rouge chez tout le monde.
 
 ### Synthèse pour la direction
 
@@ -372,6 +408,9 @@ du score, les constats apparus, résolus et persistants.
 | `GET` | `/api/analyses/{id}/stream` | Flux d'événements SSE |
 | `GET` | `/api/analyses/{id}` | Rapport complet au format JSON |
 | `GET` | `/api/analyses?domain=` | Historique |
+| `GET` | `/api/history?domain=` | Scores successifs et courbe d'évolution (SVG) |
+| `GET` | `/api/impacts` | Conséquences métier documentées, par code de constat |
+| `GET` | `/api/branding` | Identité visuelle appliquée |
 | `GET` | `/api/watchlist` | Portefeuille consolidé et état de l'ordonnanceur |
 | `POST` | `/api/watchlist` | Inscrit un domaine (mandat permanent obligatoire) |
 | `PATCH` | `/api/watchlist/{id}` | Modifie périodicité, libellé, notifications |
@@ -427,6 +466,10 @@ plafonnement en présence d'un constat critique — est documentée dans
   `TYPO_MAX_PERMUTATIONS`.
 - **Si le DNS ne répond pas du tout**, les modules concernés s'abstiennent au lieu
   de conclure à une absence de configuration.
+- **La localisation de l'hébergement est indicative.** Le pays provient du registre
+  d'adresses et peut désigner le siège de l'opérateur plutôt que l'emplacement réel
+  des machines ; « EU » est une valeur générique du RIPE couvrant plusieurs pays. Les
+  contacts nominatifs présents dans les fiches RDAP ne sont **jamais** conservés.
 - **RDAP dépend du registre de l'extension.** `rdap.org` redirige vers le serveur du
   registre (`rdap.registry.cloud` pour `.cloud`, `rdap.afnic.fr` pour `.fr`…). Derrière
   un réseau filtrant, chacun de ces hôtes doit être joignable. Certains registres
@@ -520,6 +563,9 @@ app/
 ├── resolver.py        Résolution DNS : système ou DNS-over-HTTPS
 ├── httpclient.py      Cache 24 h, politesse, nouvelles tentatives
 ├── sanitize.py        Masquage et suppression des champs sensibles
+├── impacts.py         Conséquences métier par constat
+├── chart.py           Courbe d'évolution du score (SVG)
+├── branding.py        Marque blanche
 ├── watchlist.py       Portefeuille, mandat permanent, détection de régression
 ├── scheduler.py       Analyses planifiées
 ├── notify.py          Alertes par webhook et par courriel

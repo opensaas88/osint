@@ -28,6 +28,18 @@ TIMEOUT = 150.0
 
 INTERNETDB_URL = "https://internetdb.shodan.io/{ip}"
 SHODAN_HOST_URL = "https://api.shodan.io/shodan/host/{ip}"
+RDAP_IP_URL = "https://rdap.org/ip/{ip}"
+
+#: Codes pays de l'Espace économique européen, plus « EU », valeur générique
+#: employée par le RIPE pour une allocation couvrant plusieurs pays européens.
+PAYS_EEE = frozenset({
+    "EU", "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU",
+    "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    "IS", "LI", "NO",
+})
+
+#: Nombre maximal d'adresses pour lesquelles l'hébergement est localisé.
+MAX_IPS_LOCALISEES = 8
 
 MAX_IPS = 30
 
@@ -95,6 +107,33 @@ def is_shared_infrastructure(record: dict[str, Any], domain: str) -> tuple[bool,
     if len(foreign) >= 3:
         return True, "noms d'hôtes multiples sans rapport avec le domaine"
     return False, None
+
+
+async def localiser(http, run_: ModuleRun, ip: str) -> dict[str, Any] | None:
+    """Pays et réseau d'une adresse, via le RDAP du registre régional.
+
+    Les réponses RDAP contiennent les coordonnées des contacts, dont des noms de
+    personnes physiques : seuls le nom du réseau, le pays et l'identifiant du
+    registre sont conservés. Aucune donnée personnelle n'entre dans le rapport.
+    """
+    # rdap.org redirige vers le registre régional : la redirection doit être suivie
+    # quelle que soit la configuration du client partagé.
+    resultat = await http.request(
+        "rdap", RDAP_IP_URL.format(ip=ip), retries=2, follow_redirects=True
+    )
+    run_.source(resultat.source_ref(label=f"RDAP du registre régional — {ip}"))
+    if not resultat.ok or not isinstance(resultat.payload, dict):
+        run_.error(f"RDAP ({ip}) : {resultat.describe_error()}")
+        return None
+    payload = resultat.payload
+    pays = str(payload.get("country") or "").upper() or None
+    return {
+        "ip": ip,
+        "reseau": payload.get("name"),
+        "plage": payload.get("handle"),
+        "pays": pays,
+        "dans_eee": pays in PAYS_EEE if pays else None,
+    }
 
 
 async def run(ctx: ModuleContext) -> ModuleResult:
@@ -252,6 +291,54 @@ async def run(ctx: ModuleContext) -> ModuleResult:
             [refs.CIS_CONTROLS, refs.ANSSI_CARTOGRAPHIE],
             {"ports": sensibles},
         )
+
+    # --- localisation de l'hébergement -------------------------------------
+    localisations = [
+        entree
+        for entree in await asyncio.gather(
+            *(localiser(ctx.http, run_, ip) for ip in valid[:MAX_IPS_LOCALISEES])
+        )
+        if entree
+    ]
+    run_.data["hebergement"] = localisations
+
+    if localisations:
+        pays = sorted({e["pays"] for e in localisations if e["pays"]})
+        hors_eee = [e for e in localisations if e["dans_eee"] is False]
+        reseaux = sorted({str(e["reseau"]) for e in localisations if e.get("reseau")})
+
+        if hors_eee:
+            run_.add(
+                "EXPOSURE_HOSTING_OUTSIDE_EU", Severity.FAIBLE,
+                f"{len(hors_eee)} adresse(s) hébergée(s) hors de l'Espace économique européen",
+                "Adresses concernées : "
+                + ", ".join(f"{e['ip']} ({e['pays']})" for e in hors_eee[:8])
+                + ". Réseaux : " + (", ".join(reseaux[:6]) or "non précisés") + ".",
+                "Ce n'est pas une faiblesse technique, mais un point de conformité : un "
+                "hébergement hors de l'Union européenne constitue un transfert de données "
+                "qui doit être encadré et documenté dans votre registre de traitements. "
+                "Le pays indiqué provient du registre d'adresses et peut désigner le siège "
+                "de l'opérateur plutôt que l'emplacement réel des machines.",
+                "Documenter ce transfert et les garanties associées, ou rapatrier "
+                "l'hébergement si le contexte l'exige (données de santé, secteur public, "
+                "clauses contractuelles).",
+                [refs.CIS_INVENTAIRE, refs.ANSSI_CARTOGRAPHIE],
+                {"adresses": hors_eee},
+            )
+        else:
+            run_.add(
+                "EXPOSURE_HOSTING_LOCATION", Severity.INFO,
+                "Hébergement localisé dans l'Espace économique européen",
+                f"Pays déclarés au registre : {', '.join(pays) or 'non précisé'}. "
+                f"Réseaux : {', '.join(reseaux[:6]) or 'non précisés'}.",
+                "Les adresses qui servent vos services sont enregistrées auprès d'un "
+                "registre européen. « EU » est une valeur générique du RIPE lorsqu'une "
+                "plage couvre plusieurs pays européens.",
+                "Conserver cette information dans la cartographie de votre système "
+                "d'information et dans votre registre de traitements.",
+                [refs.ANSSI_CARTOGRAPHIE, refs.CIS_INVENTAIRE],
+                {"pays": pays, "reseaux": reseaux[:20]},
+            )
 
     # --- synthèse de la surface ---
     if dedies:

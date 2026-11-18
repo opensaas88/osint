@@ -306,3 +306,49 @@ def test_analyse_immediate_dun_domaine_suivi(client, monkeypatch):
 
     actions = [e["action"] for e in client.get("/api/audit").json()["journal"]]
     assert "analyse_planifiee" in actions
+
+
+def test_historique_des_scores_et_courbe(client, settings):
+    """Deux analyses au moins sont nécessaires pour tracer une évolution."""
+    import asyncio
+
+    store = Store(settings.db_path)
+    for identifiant, score, note, date in (
+        ("h1", 45, "F", datetime(2026, 1, 5, tzinfo=UTC)),
+        ("h2", 69, "D", datetime(2026, 2, 5, tzinfo=UTC)),
+        ("h3", 91, "A", datetime(2026, 3, 5, tzinfo=UTC)),
+    ):
+        asyncio.run(store.save_report(Report(
+            id=identifiant, domain="exemple.fr", domain_unicode="exemple.fr",
+            status=AnalysisStatus.DONE, started_at=date, finished_at=date,
+            score=score, grade=note, actor="pytest",
+            consents=Consents(authorization=True, passive_only=True),
+        )))
+
+    payload = client.get("/api/history?domain=exemple.fr").json()
+    assert [p["score"] for p in payload["points"]] == [45, 69, 91]  # du plus ancien au récent
+    assert payload["svg"].startswith("<svg")
+    assert payload["domaine"] == "exemple.fr"
+
+
+def test_historique_dun_domaine_sans_analyse(client):
+    payload = client.get("/api/history?domain=jamais-vu.fr").json()
+    assert payload["points"] == []
+    assert payload["svg"] == ""  # rien à tracer
+
+
+def test_historique_domaine_invalide(client):
+    assert client.get("/api/history?domain=https://x.fr/y").status_code == 400
+
+
+def test_identite_visuelle_exposee(client):
+    marque = client.get("/api/branding").json()
+    assert marque["nom"] and marque["couleur"].startswith("#")
+
+
+def test_impacts_metier_exposes(client):
+    impacts = client.get("/api/impacts").json()["impacts"]
+    assert "EMAIL_SPF_MULTIPLE" in impacts
+    entree = impacts["EMAIL_SPF_MULTIPLE"]
+    assert "facture" in entree["phrase"]
+    assert entree["subi_par"]

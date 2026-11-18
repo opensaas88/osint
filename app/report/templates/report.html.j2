@@ -3,15 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DomainExposure — {{ report.domain_unicode or report.domain }}</title>
+<title>{{ marque.nom }} — {{ report.domain_unicode or report.domain }}</title>
 <style>{{ css|safe }}</style>
 </head>
 <body>
 
 {# ======================================================== page de garde == #}
 <section class="cover">
-  <div class="cover-kicker">Rapport d'exposition cyber — OSINT passif</div>
-  <h1>DomainExposure</h1>
+  {% if marque.logo %}
+  <img src="{{ marque.logo }}" alt="{{ marque.nom }}" class="cover-logo">
+  {% endif %}
+  <div class="cover-kicker" style="color: {{ marque.couleur }}">Rapport d'exposition cyber —
+    OSINT passif</div>
+  <h1>{{ marque.nom }}</h1>
   <div class="cover-domain">{{ report.domain_unicode or report.domain }}
     {%- if report.domain_unicode and report.domain_unicode != report.domain %}
     <br><small>forme ASCII : {{ report.domain }}</small>
@@ -207,9 +211,17 @@
 </section>
 
 {# ======================================================== vues métier ==== #}
-{% if timeline or cve_rows or subdomain_rows %}
+{% if timeline or cve_rows or subdomain_rows or courbe_evolution %}
 <section class="page-break">
   <h2>Vues de synthèse</h2>
+
+  {% if courbe_evolution %}
+  <h3>Évolution du score</h3>
+  {{ courbe_evolution|safe }}
+  <p><small>{{ historique_points }} analyses successives de ce domaine. L'échelle verticale
+    est fixée de 0 à 100 : une variation de quelques points reste visuellement une variation
+    de quelques points.</small></p>
+  {% endif %}
 
   {% if timeline %}
   <h3>Chronologie des fuites de données</h3>
@@ -298,6 +310,15 @@
       <dl>
         <dt>Constat</dt><dd>{{ finding.constat }}</dd>
         <dt>Ce que cela signifie</dt><dd>{{ finding.explication }}</dd>
+        {% if impacts.get(finding.code) %}
+        <dt>Ce que cela implique pour l'organisation</dt>
+        <dd class="impact">{{ impacts[finding.code].phrase }}
+          {%- if impacts[finding.code].ressource %}
+          <br><small>À lire : {{ impacts[finding.code].ressource.framework }} —
+            {{ impacts[finding.code].ressource.label }}</small>
+          {%- endif %}
+        </dd>
+        {% endif %}
         <dt>Recommandation</dt><dd>{{ finding.recommandation }}</dd>
       </dl>
       {% if finding.references %}
@@ -400,7 +421,10 @@
     </tbody>
   </table>
 
-  <p><small>Rapport produit le {{ generated_at }} par DomainExposure
+  {% if marque.pied_de_page %}
+  <p><small>{{ marque.pied_de_page }}</small></p>
+  {% endif %}
+  <p><small>Rapport produit le {{ generated_at }} — moteur d'analyse DomainExposure
     {{ report.app_version }}. Ce document contient des informations sur la surface
     d'exposition d'une organisation : il doit être traité comme confidentiel et diffusé
     selon le cadre contractuel applicable.</small></p>

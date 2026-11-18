@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     crtsh_timeout: float = 60.0
     user_agent: str = "DomainExposure/1.0 (outil d'audit passif; +https://localhost)"
 
+    # --- Marque blanche ---
+    # La marque habille l'en-tête et les accents. Elle ne touche jamais aux
+    # couleurs de gravité : un constat critique reste rouge chez tout le monde.
+    brand_name: str = "DomainExposure"
+    brand_color: str = "#256abf"
+    brand_logo_path: Path | None = None
+    brand_footer: str | None = None
+
     # --- Surveillance planifiée ---
     scheduler_enabled: bool = True
     scheduler_tick_seconds: int = 300

@@ -16,8 +16,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__, audit
+from .branding import branding
+from .chart import score_evolution_svg
 from .compare import compare_reports
 from .config import get_settings
+from .impacts import impact_for, phrase_impact
 from .models import AnalysisStatus, Consents
 from .modules import MODULE_LABELS
 from .orchestrator import AnalysisChannel, Orchestrator, purge_expired
@@ -125,12 +128,34 @@ def create_app(settings=None, store=None) -> FastAPI:
         return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
 
     # --------------------------------------------------------------- méta ---
+    @app.get("/api/branding")
+    async def identite() -> dict[str, Any]:
+        """Identité visuelle appliquée à l'interface et aux rapports."""
+        return branding(settings)
+
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "version": __version__,
             "horodatage": datetime.now(UTC).isoformat(),
+        }
+
+    @app.get("/api/impacts")
+    async def impacts() -> dict[str, Any]:
+        """Conséquences métier documentées, indexées par code de constat."""
+        from .impacts import IMPACT_BY_CODE
+
+        return {
+            "impacts": {
+                code: {
+                    "phrase": phrase_impact(code),
+                    "subi_par": impact.subi_par,
+                    "ressource": (impact_for(code).ressource.model_dump()
+                                  if impact.ressource else None),
+                }
+                for code, impact in IMPACT_BY_CODE.items()
+            }
         }
 
     @app.get("/api/modules")
@@ -284,6 +309,18 @@ def create_app(settings=None, store=None) -> FastAPI:
             raise HTTPException(status_code=404, detail={"erreur": "analyse inconnue"})
         return simulate(report.get("modules") or [], payload.codes)
 
+    @app.get("/api/history")
+    async def historique_des_scores(
+        domain: str, limit: int = Query(default=60, ge=2, le=365)
+    ) -> dict[str, Any]:
+        """Scores successifs d'un domaine, et la courbe prête à afficher."""
+        try:
+            cible = normalize_domain(domain).ascii
+        except InvalidDomain as exc:
+            raise HTTPException(status_code=400, detail={"erreur": exc.reason}) from exc
+        points = await store.score_history(cible, limit)
+        return {"domaine": cible, "points": points, "svg": score_evolution_svg(points)}
+
     @app.get("/api/compare")
     async def compare(a: str = Query(...), b: str = Query(...)) -> dict[str, Any]:
         before, after = await asyncio.gather(store.get_report(a), store.get_report(b))
@@ -429,7 +466,8 @@ def create_app(settings=None, store=None) -> FastAPI:
             domain=report.get("domain"), analysis_id=analysis_id,
             client_ip=request.client.host if request.client else None,
         )
-        return HTMLResponse(render_html(report, settings))
+        historique = await store.score_history(report.get("domain", ""))
+        return HTMLResponse(render_html(report, settings, historique))
 
     @app.get("/api/analyses/{analysis_id}/report.pdf", include_in_schema=False)
     async def export_pdf(analysis_id: str, request: Request) -> Response:
@@ -439,7 +477,8 @@ def create_app(settings=None, store=None) -> FastAPI:
         if report is None:
             raise HTTPException(status_code=404, detail={"erreur": "analyse inconnue"})
         try:
-            content = await asyncio.to_thread(render_pdf, report, settings)
+            historique = await store.score_history(report.get("domain", ""))
+            content = await asyncio.to_thread(render_pdf, report, settings, historique)
         except PdfUnavailable as exc:
             raise HTTPException(status_code=503, detail={"erreur": str(exc)}) from exc
         await audit.record(

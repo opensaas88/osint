@@ -25,7 +25,9 @@ def pdf_available() -> tuple[bool, str | None]:
     return True, None
 
 
-def render_pdf(report: dict[str, Any], settings) -> bytes:
+def render_pdf(
+    report: dict[str, Any], settings, historique: list[dict[str, Any]] | None = None
+) -> bytes:
     """Produit le PDF du rapport. Lève `PdfUnavailable` si WeasyPrint manque."""
     available, reason = pdf_available()
     if not available:
@@ -33,5 +35,5 @@ def render_pdf(report: dict[str, Any], settings) -> bytes:
 
     from weasyprint import HTML
 
-    html = render_html(report, settings)
+    html = render_html(report, settings, historique)
     return HTML(string=html).write_pdf()

@@ -16,7 +16,8 @@ const STATUS_LABELS = {
   skipped: "désactivé", error: "en échec",
 };
 
-const state = { modules: [], results: {}, analysisId: null, domain: null, selected: [] };
+const state = { modules: [], results: {}, analysisId: null, domain: null, selected: [],
+                impacts: {} };
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g,
@@ -301,6 +302,15 @@ function renderModuleCard(module) {
           <dd>${esc(finding.constat)}</dd>
           <dt class="muted text-xs uppercase tracking-wide">Ce que cela signifie</dt>
           <dd>${esc(finding.explication)}</dd>
+          ${state.impacts[finding.code] ? `
+          <dt class="muted text-xs uppercase tracking-wide">Ce que cela implique</dt>
+          <dd style="border-left:2px solid var(--rule);padding-left:8px">
+            ${esc(state.impacts[finding.code].phrase)}
+            ${state.impacts[finding.code].ressource
+              ? `<br><span class="muted text-xs">À lire :
+                 ${esc(state.impacts[finding.code].ressource.framework)} —
+                 ${esc(state.impacts[finding.code].ressource.label)}</span>` : ""}
+          </dd>` : ""}
           <dt class="muted text-xs uppercase tracking-wide">Recommandation</dt>
           <dd>${esc(finding.recommandation)}</dd>
         </dl>
@@ -528,6 +538,7 @@ async function launch() {
   state.results = {};
   $("results").classList.add("hidden");
   $("plan").classList.add("hidden");
+  $("evolution").classList.add("hidden");
   $("comparison").innerHTML = "";
 
   let response;
@@ -587,6 +598,7 @@ async function launch() {
     source.close();
     loadHistory(null);
     loadPortefeuille();
+    chargerEvolution(state.domain);
     try {
       const reponse = await fetch(
         `/api/analyses/${encodeURIComponent(state.analysisId)}/plan?limite=12`);
@@ -608,8 +620,56 @@ async function launch() {
   };
 }
 
+async function appliquerMarque() {
+  try {
+    const reponse = await fetch("/api/branding");
+    if (!reponse.ok) return;
+    const marque = await reponse.json();
+    $("marque").textContent = marque.nom;
+    document.title = `${marque.nom} — exposition cyber`;
+    // La couleur de marque n'habille que les accents : les couleurs de gravité
+    // portent du sens et ne sont jamais remplacées.
+    document.querySelectorAll("[data-accent]").forEach((noeud) => {
+      noeud.style.background = marque.couleur;
+    });
+    if (marque.logo) {
+      const img = document.createElement("img");
+      img.src = marque.logo;
+      img.alt = marque.nom;
+      img.style.maxHeight = "34px";
+      img.style.marginBottom = "6px";
+      $("marque").parentElement.prepend(img);
+    }
+  } catch (exc) { /* l'identité visuelle est un confort */ }
+}
+
+async function chargerEvolution(domaine) {
+  try {
+    const reponse = await fetch(`/api/history?domain=${encodeURIComponent(domaine)}`);
+    if (!reponse.ok) return;
+    const payload = await reponse.json();
+    if (!payload.svg) return;  // moins de deux analyses : rien à tracer
+    $("evolution").classList.remove("hidden");
+    $("evolution").innerHTML = `
+      <h3 class="text-lg font-semibold mb-1">Évolution du score</h3>
+      <p class="muted text-xs mb-3">${payload.points.length} analyses successives de
+        ${esc(payload.domaine)}. L'échelle verticale est fixée de 0 à 100 : une variation de
+        quelques points reste visuellement une variation de quelques points.</p>
+      ${payload.svg}`;
+  } catch (exc) { /* la courbe est un enrichissement */ }
+}
+
+async function chargerImpacts() {
+  try {
+    const reponse = await fetch("/api/impacts");
+    if (reponse.ok) state.impacts = (await reponse.json()).impacts || {};
+  } catch (exc) { /* l'impact métier est un enrichissement, pas un prérequis */ }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initTheme();
+  appliquerMarque();
+  chargerImpacts();
   $("launch").addEventListener("click", launch);
   $("domain").addEventListener("keydown", (event) => {
     if (event.key === "Enter") launch();

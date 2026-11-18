@@ -9,6 +9,9 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from ..branding import branding
+from ..chart import score_evolution_svg
+from ..impacts import impact_for, phrase_impact
 from ..models import SEVERITY_ORDER, Severity
 from ..modules import MODULE_LABELS
 from ..remediation import build_plan
@@ -112,7 +115,9 @@ def _environment() -> Environment:
     return env
 
 
-def build_context(report: dict[str, Any], settings) -> dict[str, Any]:
+def build_context(
+    report: dict[str, Any], settings, historique: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Prépare toutes les données dérivées dont le gabarit a besoin."""
     modules = report.get("modules") or []
 
@@ -209,7 +214,8 @@ def build_context(report: dict[str, Any], settings) -> dict[str, Any]:
         {
             "severity": finding["severity"],
             "title": finding["title"],
-            "impact": resume_impact(finding.get("explication", "")),
+            "impact": phrase_impact(finding["code"])
+                      or resume_impact(finding.get("explication", "")),
             "module": MODULE_LABELS.get(finding["module"], finding["module"]),
         }
         for finding in top_findings[:3]
@@ -229,7 +235,8 @@ def build_context(report: dict[str, Any], settings) -> dict[str, Any]:
                 {
                     "severity": finding["severity"],
                     "title": finding["title"],
-                    "impact": resume_impact(finding.get("explication", "")),
+                    "impact": phrase_impact(finding["code"])
+                      or resume_impact(finding.get("explication", "")),
                     "module": MODULE_LABELS.get(finding["module"], finding["module"]),
                 }
             )
@@ -264,18 +271,33 @@ def build_context(report: dict[str, Any], settings) -> dict[str, Any]:
         "projection_courte": projection_courte,
         "projection_courte_note": projection_courte_note,
         "risques_majeurs": risques_majeurs,
+        "impacts": {
+            code: {
+                "phrase": phrase_impact(code),
+                "ressource": (impact_for(code).ressource.model_dump()
+                              if impact_for(code) and impact_for(code).ressource else None),
+            }
+            for module in modules
+            for code in (f["code"] for f in module.get("findings") or [])
+            if impact_for(code) is not None
+        },
         "score_style": score_style,
         "plafond_critique": CRITICAL_SCORE_CAP,
         "cache_heures": settings.cache_ttl_hours,
         "audit_jours": settings.audit_retention_days,
         "cles_api": settings.api_key_inventory(),
         "generated_at": _format_datetime(datetime.now(UTC)),
+        "marque": branding(settings),
+        "courbe_evolution": score_evolution_svg(historique or []),
+        "historique_points": len(historique or []),
     }
 
 
-def render_html(report: dict[str, Any], settings) -> str:
+def render_html(
+    report: dict[str, Any], settings, historique: list[dict[str, Any]] | None = None
+) -> str:
     """Rend le rapport complet dans un fichier HTML autonome."""
     env = _environment()
     css = (TEMPLATE_DIR / "report.css").read_text(encoding="utf-8")
     template = env.get_template("report.html.j2")
-    return template.render(css=css, **build_context(report, settings))
+    return template.render(css=css, **build_context(report, settings, historique))

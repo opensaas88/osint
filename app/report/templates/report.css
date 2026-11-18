@@ -75,6 +75,7 @@ small { font-size: 8.5pt; color: var(--text-secondary); }
   background: var(--surface-2);
   min-height: 297mm;
 }
+.cover-logo { max-height: 22mm; max-width: 70mm; margin-bottom: 8mm; }
 .cover-kicker {
   font-size: 9pt;
   letter-spacing: .14em;
@@ -192,6 +193,7 @@ small { font-size: 8.5pt; color: var(--text-secondary); }
   margin-top: 6px;
 }
 .finding dd { margin: 1px 0 0; }
+.impact { border-left: 2px solid var(--rule-strong); padding-left: 8px; }
 .refs { margin-top: 7px; font-size: 8.5pt; color: var(--text-secondary); }
 .refs strong { color: var(--text-primary); }
 .code { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 8.5pt; color: var(--text-muted); }

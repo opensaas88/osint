@@ -92,7 +92,10 @@ def _jours_restants(date_iso: str | None) -> int | None:
 
 async def check_domain_registration(ctx: ModuleContext, run_: ModuleRun) -> None:
     """Interroge RDAP : expiration du nom de domaine et verrous posés par le registrar."""
-    result = await ctx.http.request("rdap", RDAP_URL.format(domain=ctx.name), retries=2)
+    # rdap.org redirige vers le registre de l'extension : redirection explicite.
+    result = await ctx.http.request(
+        "rdap", RDAP_URL.format(domain=ctx.name), retries=2, follow_redirects=True
+    )
     run_.source(result.source_ref(label="RDAP (registre du nom de domaine)"))
 
     if not result.ok or not isinstance(result.payload, dict):

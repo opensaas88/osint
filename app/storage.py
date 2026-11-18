@@ -292,6 +292,24 @@ class Store:
         """Domaines suivis dont l'échéance d'analyse est atteinte."""
         return await asyncio.to_thread(self._watch_due_sync, _iso(_utcnow()))
 
+    def _score_history_sync(self, domain: str, limit: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, started_at, score, grade FROM analyses WHERE domain = ?"
+                " AND status = 'done' AND score IS NOT NULL"
+                " ORDER BY started_at DESC LIMIT ?",
+                (domain, limit),
+            ).fetchall()
+        # Du plus ancien au plus récent : c'est le sens de lecture d'une courbe.
+        return [
+            {"id": r["id"], "date": r["started_at"], "score": r["score"], "grade": r["grade"]}
+            for r in reversed(rows)
+        ]
+
+    async def score_history(self, domain: str, limit: int = 60) -> list[dict[str, Any]]:
+        """Scores successifs d'un domaine, du plus ancien au plus récent."""
+        return await asyncio.to_thread(self._score_history_sync, domain, limit)
+
     def _last_two_reports_sync(self, domain: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

@@ -79,7 +79,7 @@
 
   <header class="mb-6 flex items-start justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold">DomainExposure</h1>
+      <h1 id="marque" class="text-2xl font-semibold">DomainExposure</h1>
       <p class="muted text-sm mt-1">Évaluation de l'exposition cyber d'une organisation à
         partir de son nom de domaine — OSINT strictement passif.</p>
     </div>
@@ -96,7 +96,7 @@
              class="flex-1 rounded-md border px-3 py-2 text-sm"
              style="background: var(--surface-1); border-color: var(--rule); color: inherit">
       <button id="launch"
-              class="rounded-md px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
+              data-accent class="rounded-md px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
               style="background: #256abf">Analyser</button>
     </div>
     <p class="muted text-xs mt-1">Un nom de domaine seul : ni adresse IP, ni URL. Les noms
@@ -191,12 +191,15 @@
           <span>Facultatif. La propriété de ce domaine est vérifiée auprès de Have I Been Pwned.</span>
         </label>
       </div>
-      <button id="w-add" class="mt-3 rounded-md px-4 py-2 text-sm font-medium text-white"
+      <button id="w-add" data-accent class="mt-3 rounded-md px-4 py-2 text-sm font-medium text-white"
               style="background: #256abf">Ajouter au portefeuille</button>
       <div id="w-error" class="hidden mt-2 rounded-md px-3 py-2 text-sm text-white"
            style="background: var(--critique)"></div>
     </details>
   </section>
+
+  <!-- ------------------------------------------------ évolution du score -->
+  <section id="evolution" class="card rounded-lg p-5 mb-6 hidden"></section>
 
   <!-- --------------------------------------------- plan de remédiation -->
   <section id="plan" class="card rounded-lg p-5 mt-6 hidden"></section>
