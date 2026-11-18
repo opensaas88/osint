@@ -153,13 +153,20 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 
 | Source | Variable | Tarif | Obtention | Apport |
 |---|---|---|---|---|
-| Have I Been Pwned | `HIBP_API_KEY` | Payant (≈ 3,95 $/mois) | <https://haveibeenpwned.com/API/Key> | Recherche des **comptes du domaine** présents dans des fuites. Sans clé, les fuites ayant touché le site restent listées via l'endpoint public. |
+| Have I Been Pwned | `HIBP_API_KEY` | Payant | <https://haveibeenpwned.com/API/Key> | Recherche des **comptes du domaine** présents dans des fuites, et **journaux d'infostealers** (palier « Pro »). Sans clé, les fuites ayant touché le site restent listées via l'endpoint public. |
 | Shodan | `SHODAN_API_KEY` | Payant (licence à vie fréquemment en promotion) | <https://account.shodan.io> | Détail par service. Sans clé, **Shodan InternetDB** fournit déjà ports, CVE connues et étiquettes, gratuitement et sans authentification. |
 | VirusTotal | `VIRUSTOTAL_API_KEY` | Gratuit (4 requêtes/minute) | <https://www.virustotal.com/gui/my-apikey> | Réputation du domaine auprès de dizaines de moteurs |
 | AbuseIPDB | `ABUSEIPDB_API_KEY` | Gratuit (1 000 requêtes/jour) | <https://www.abuseipdb.com/account/api> | Signalements d'abus sur les adresses IP |
 | URLhaus (abuse.ch) | `URLHAUS_AUTH_KEY` | Gratuit, **désormais obligatoire** | <https://auth.abuse.ch> | URL de distribution de logiciels malveillants hébergées sur le domaine |
 | LeakCheck | `LEAKCHECK_API_KEY` | Payant | <https://leakcheck.io> | Seconde base de fuites, en métadonnées |
 | Intelligence X | `INTELX_API_KEY` | Payant | <https://intelx.io> | Volumétrie des sélecteurs indexés |
+
+> **Recherches par domaine chez HIBP.** Le Domain Search et les journaux
+> d'infostealers exigent, en plus de la clé, que le domaine soit **ajouté et
+> vérifié dans le tableau de bord de recherche par domaine** de Have I Been Pwned
+> (enregistrement DNS TXT ou courriel). Sans cette vérification, l'API répond 403 —
+> l'outil l'indique alors explicitement. Les journaux d'infostealers relèvent du
+> palier « Pro ».
 
 > **Shodan et les en-têtes.** Shodan s'authentifie par paramètre d'URL (`?key=`)
 > et non par en-tête HTTP : la clé doit figurer dans `.env`, elle ne peut pas être
@@ -176,7 +183,7 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 
 | # | Module | Poids | Sources | Clé requise |
 |---|---|---:|---|---|
-| 1 | Fuites de données | 15 | Have I Been Pwned, LeakCheck, Intelligence X | non (partiel) |
+| 1 | Fuites de données | 15 | Have I Been Pwned (fuites, Domain Search, journaux d'infostealers), LeakCheck, Intelligence X | non (partiel) |
 | 2 | Ransomware | 10 | ransomware.live | non |
 | 3 | Hygiène email | 20 | DNS (MX, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI) | non |
 | 4 | Hygiène DNS | 10 | DNS (DNSSEC, NS, CAA), empreintes de reprise de sous-domaine | non |
@@ -185,6 +192,27 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 | 7 | TLS & en-têtes HTTP | 15 | Poignée de main TLS, requête web standard | non |
 | 8 | Typosquatting | 5 | dnstwist + résolution DNS | non |
 | 9 | Réputation | 5 | VirusTotal, URLhaus, AbuseIPDB | oui |
+
+### Journaux d'infostealers (module 1)
+
+Un logiciel voleur d'identifiants s'exécute sur le poste d'une personne et transmet
+ce qu'elle saisit dans son navigateur. C'est un signal bien plus direct qu'une fuite
+chez un prestataire : la machine elle-même a été compromise, et les cookies de
+session volés permettent de contourner l'authentification multifacteur.
+
+Deux angles sont interrogés, sous les mêmes conditions que le Domain Search (clé
+« Pro » et domaine vérifié) :
+
+| Angle | Endpoint | Ce que cela révèle |
+|---|---|---|
+| Domaine de messagerie | `/stealerLogsByEmailDomain/{domaine}` | Vos collaborateurs dont les identifiants ont été capturés, et les services concernés — gravité **critique** |
+| Site web | `/stealerLogsByWebsiteDomain/{domaine}` | Vos utilisateurs qui saisissaient leurs identifiants sur votre site au moment de l'infection — gravité **élevée** |
+
+Les alias et adresses sont **masqués** ; seuls la volumétrie, la répartition par
+fournisseur de messagerie et les **domaines des services concernés** (qui ne sont
+pas des données personnelles, et qui indiquent quels accès renouveler) sont
+conservés. La liste nominative, nécessaire pour notifier les personnes, reste dans
+votre tableau de bord Have I Been Pwned.
 
 Chaque module expose la même interface (`app/modules/<nom>.py`) :
 

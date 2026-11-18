@@ -98,6 +98,12 @@ async def test_domain_search_masque_les_adresses(settings, http, make_context):
     respx.get(HIBP_DOMAIN).mock(return_value=httpx.Response(200, json={
         "jean.dupont": ["FuiteTest"], "contact": ["FuiteTest", "Autre"],
     }))
+    respx.get(
+        "https://haveibeenpwned.com/api/v3/stealerLogsByEmailDomain/exemple.fr"
+    ).mock(return_value=httpx.Response(404))
+    respx.get(
+        "https://haveibeenpwned.com/api/v3/stealerLogsByWebsiteDomain/exemple.fr"
+    ).mock(return_value=httpx.Response(404))
     ctx = await make_context(
         settings, http, FakeResolver(),
         consents=Consents(authorization=True, passive_only=True, domain_verified=True),
@@ -138,3 +144,129 @@ async def test_un_champ_inconnu_de_la_source_nentre_jamais_dans_le_rapport(
     assert "NouveauChampPasswordHash" not in contenu
     # Seconde barrière : si un tel champ atteignait malgré tout un résultat, il serait masqué.
     assert scrub({"NouveauChampPasswordHash": "0xdead"})["NouveauChampPasswordHash"] == REDACTED
+
+
+# ---------------------------------------------------------------------------
+# Journaux d'infostealers : identifiants capturés sur des postes infectés.
+# ---------------------------------------------------------------------------
+
+HIBP_STEALER_EMAIL = "https://haveibeenpwned.com/api/v3/stealerLogsByEmailDomain/exemple.fr"
+HIBP_STEALER_SITE = "https://haveibeenpwned.com/api/v3/stealerLogsByWebsiteDomain/exemple.fr"
+
+
+def _active(settings):
+    """Clé présente et propriété du domaine attestée."""
+    settings.hibp_api_key = "cle-de-test"
+    return Consents(authorization=True, passive_only=True, domain_verified=True)
+
+
+@respx.mock
+async def test_infostealer_sur_le_domaine_de_messagerie(settings, http, make_context):
+    consents = _active(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(HIBP_DOMAIN).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_EMAIL).mock(return_value=httpx.Response(200, json={
+        "jean.dupont": ["netflix.com", "spotify.com"],
+        "compta": ["banque-exemple.fr"],
+    }))
+    respx.get(HIBP_STEALER_SITE).mock(return_value=httpx.Response(404))
+
+    ctx = await make_context(settings, http, FakeResolver(), consents=consents)
+    resultat = await breaches.run(ctx)
+
+    assert "BREACH_STEALER_LOG_STAFF" in codes(resultat)
+    finding = next(f for f in resultat.findings if f.code == "BREACH_STEALER_LOG_STAFF")
+    assert finding.severity.value == "critique"
+    # Les services concernés sont conservés : ce sont eux qui disent quoi renouveler.
+    assert "netflix.com" in finding.constat and "banque-exemple.fr" in finding.constat
+    # Les alias, eux, sont masqués.
+    contenu = resultat.model_dump_json()
+    assert "jean.dupont@exemple.fr" not in contenu
+    assert "j***@exemple.fr" in contenu
+    assert resultat.data["stealer_logs"]["domaine_de_messagerie"]["comptes"] == 2
+
+
+@respx.mock
+async def test_infostealer_chez_les_utilisateurs_du_site(settings, http, make_context):
+    consents = _active(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(HIBP_DOMAIN).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_EMAIL).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_SITE).mock(return_value=httpx.Response(200, json=[
+        "andy@gmail.com", "jane@gmail.com", "pierre@orange.fr",
+    ]))
+
+    ctx = await make_context(settings, http, FakeResolver(), consents=consents)
+    resultat = await breaches.run(ctx)
+
+    assert "BREACH_STEALER_LOG_CUSTOMERS" in codes(resultat)
+    finding = next(f for f in resultat.findings if f.code == "BREACH_STEALER_LOG_CUSTOMERS")
+    assert finding.severity.value == "eleve"
+    # Aucune adresse de tiers en clair : volumétrie et fournisseurs seulement.
+    contenu = resultat.model_dump_json()
+    for adresse in ("andy@gmail.com", "jane@gmail.com", "pierre@orange.fr"):
+        assert adresse not in contenu
+    assert "a***@gmail.com" in contenu
+    site = resultat.data["stealer_logs"]["site_web"]
+    assert site["comptes"] == 3
+    assert site["par_fournisseur"] == {"gmail.com": 2, "orange.fr": 1}
+
+
+@respx.mock
+async def test_aucune_trace_dinfostealer(settings, http, make_context):
+    consents = _active(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(HIBP_DOMAIN).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_EMAIL).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_SITE).mock(return_value=httpx.Response(404))
+
+    ctx = await make_context(settings, http, FakeResolver(), consents=consents)
+    resultat = await breaches.run(ctx)
+    assert "BREACH_STEALER_LOG_NONE" in codes(resultat)
+    assert resultat.score == 100
+
+
+@respx.mock
+async def test_domaine_non_verifie_chez_hibp_message_explicite(settings, http, make_context):
+    """HIBP répond 403 tant que le domaine n'est pas vérifié dans son tableau de bord."""
+    consents = _active(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(HIBP_DOMAIN).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_EMAIL).mock(return_value=httpx.Response(403))
+    respx.get(HIBP_STEALER_SITE).mock(return_value=httpx.Response(403))
+
+    ctx = await make_context(settings, http, FakeResolver(), consents=consents)
+    resultat = await breaches.run(ctx)
+    assert resultat.status.value == "partial"
+    assert any("tableau de bord" in erreur for erreur in resultat.errors)
+    assert "BREACH_STEALER_LOG_NONE" not in codes(resultat)
+
+
+@respx.mock
+async def test_palier_insuffisant_message_explicite(settings, http, make_context):
+    consents = _active(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(HIBP_DOMAIN).mock(return_value=httpx.Response(404))
+    respx.get(HIBP_STEALER_EMAIL).mock(return_value=httpx.Response(401))
+    respx.get(HIBP_STEALER_SITE).mock(return_value=httpx.Response(401))
+
+    ctx = await make_context(settings, http, FakeResolver(), consents=consents)
+    resultat = await breaches.run(ctx)
+    assert any("Pro" in erreur for erreur in resultat.errors)
+
+
+@respx.mock
+async def test_infostealers_bloques_sans_attestation_de_propriete(settings, http, make_context):
+    """Sans la case « domaine vérifié », aucune requête n'est émise vers ces endpoints."""
+    settings.hibp_api_key = "cle-de-test"
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    route_mail = respx.get(HIBP_STEALER_EMAIL).mock(return_value=httpx.Response(200, json={}))
+    route_site = respx.get(HIBP_STEALER_SITE).mock(return_value=httpx.Response(200, json=[]))
+
+    ctx = await make_context(settings, http, FakeResolver(),
+                             consents=Consents(authorization=True, passive_only=True))
+    resultat = await breaches.run(ctx)
+
+    assert route_mail.call_count == 0 and route_site.call_count == 0
+    sources = {item["source"] for item in resultat.data["sources_desactivees"]}
+    assert "HIBP — journaux d'infostealers" in sources

@@ -6,6 +6,11 @@ Sources :
   * Have I Been Pwned Domain Search : comptes du domaine apparaissant dans des
     fuites. Nécessite une clé ET la case « domaine vérifié » cochée ; les adresses
     sont masquées.
+  * Have I Been Pwned Stealer Logs : identifiants capturés par un logiciel
+    voleur (infostealer) sur des postes réellement infectés. Deux angles — les
+    comptes du domaine de messagerie (vos collaborateurs) et les comptes ayant
+    saisi leurs identifiants sur votre site (vos utilisateurs). Mêmes conditions :
+    clé de palier « Pro » et domaine vérifié dans le tableau de bord HIBP.
   * LeakCheck et Intelligence X, optionnels, en mode métadonnées uniquement.
 
 Règle absolue : aucun mot de passe, aucune empreinte, aucune donnée personnelle en
@@ -32,6 +37,12 @@ TIMEOUT = 90.0
 
 HIBP_BREACHES_URL = "https://haveibeenpwned.com/api/v3/breaches"
 HIBP_DOMAIN_SEARCH_URL = "https://haveibeenpwned.com/api/v3/breacheddomain/{domain}"
+HIBP_STEALER_EMAIL_DOMAIN_URL = (
+    "https://haveibeenpwned.com/api/v3/stealerLogsByEmailDomain/{domain}"
+)
+HIBP_STEALER_WEBSITE_DOMAIN_URL = (
+    "https://haveibeenpwned.com/api/v3/stealerLogsByWebsiteDomain/{domain}"
+)
 LEAKCHECK_URL = "https://leakcheck.io/api/v2/query/{query}"
 INTELX_SEARCH_URL = "https://2.intelx.io/phonebook/search"
 
@@ -144,6 +155,101 @@ async def _hibp_domain_search(ctx: ModuleContext, run_: ModuleRun) -> dict[str, 
         if len(exemples) < 10:
             exemples.append(mask_email(f"{alias}@{ctx.name}"))
     return {"comptes": len(payload), "par_fuite": par_fuite, "exemples": exemples}
+
+
+def _explain_stealer_error(result) -> str:
+    """Message d'erreur spécifique aux endpoints « stealer logs »."""
+    if result.status == 403:
+        return (
+            "accès refusé (403) : le domaine doit d'abord être ajouté et vérifié dans le "
+            "tableau de bord de recherche par domaine de Have I Been Pwned"
+        )
+    if result.status == 401:
+        return (
+            "clé refusée (401) : ces recherches exigent une clé de palier « Pro »"
+        )
+    return result.describe_error()
+
+
+async def _hibp_stealer_logs_email_domain(
+    ctx: ModuleContext, run_: ModuleRun
+) -> dict[str, Any] | None:
+    """Comptes du domaine de messagerie dont les identifiants ont été volés.
+
+    Réponse HIBP : un dictionnaire alias -> domaines des services concernés,
+    par exemple `{"jean": ["netflix.com", "spotify.com"]}`. Les alias sont
+    masqués ; les domaines de services, eux, ne sont pas des données
+    personnelles et sont conservés tels quels car ce sont eux qui indiquent
+    quels accès renouveler.
+    """
+    key = ctx.settings.key("hibp_api_key")
+    if not key:
+        return None
+    result = await ctx.http.request(
+        "hibp",
+        HIBP_STEALER_EMAIL_DOMAIN_URL.format(domain=ctx.name),
+        headers={"hibp-api-key": key},
+    )
+    run_.source(
+        result.source_ref(
+            label="Have I Been Pwned — journaux d'infostealers (domaine de messagerie)"
+        )
+    )
+    if result.status == 404:
+        return {"comptes": 0, "services": [], "exemples": []}
+    if not result.ok:
+        run_.error(f"Have I Been Pwned (infostealers, messagerie) : {_explain_stealer_error(result)}")
+        return None
+
+    payload = result.payload if isinstance(result.payload, dict) else {}
+    services: set[str] = set()
+    exemples: list[dict[str, Any]] = []
+    for alias, domaines in payload.items():
+        domaines = [str(d) for d in (domaines or [])]
+        services.update(domaines)
+        if len(exemples) < 10:
+            exemples.append(
+                {"compte": mask_email(f"{alias}@{ctx.name}"), "services": sorted(domaines)[:8]}
+            )
+    return {"comptes": len(payload), "services": sorted(services), "exemples": exemples}
+
+
+async def _hibp_stealer_logs_website_domain(
+    ctx: ModuleContext, run_: ModuleRun
+) -> dict[str, Any] | None:
+    """Comptes ayant saisi leurs identifiants sur ce site et capturés par un infostealer.
+
+    Réponse HIBP : un tableau d'adresses complètes. Ces adresses appartiennent à
+    des tiers (vos utilisateurs) : seules leur volumétrie, la répartition par
+    fournisseur de messagerie et quelques exemples masqués sont conservés. La
+    liste nominative, nécessaire pour notifier les personnes, reste consultable
+    dans le tableau de bord Have I Been Pwned.
+    """
+    key = ctx.settings.key("hibp_api_key")
+    if not key:
+        return None
+    result = await ctx.http.request(
+        "hibp",
+        HIBP_STEALER_WEBSITE_DOMAIN_URL.format(domain=ctx.name),
+        headers={"hibp-api-key": key},
+    )
+    run_.source(result.source_ref(label="Have I Been Pwned — journaux d'infostealers (site web)"))
+    if result.status == 404:
+        return {"comptes": 0, "par_fournisseur": {}, "exemples": []}
+    if not result.ok:
+        run_.error(f"Have I Been Pwned (infostealers, site web) : {_explain_stealer_error(result)}")
+        return None
+
+    adresses = [str(a) for a in (result.payload or []) if isinstance(a, str)]
+    par_fournisseur: dict[str, int] = {}
+    for adresse in adresses:
+        fournisseur = adresse.rpartition("@")[2].lower() or "inconnu"
+        par_fournisseur[fournisseur] = par_fournisseur.get(fournisseur, 0) + 1
+    return {
+        "comptes": len(adresses),
+        "par_fournisseur": dict(sorted(par_fournisseur.items(), key=lambda kv: -kv[1])),
+        "exemples": [mask_email(a) for a in adresses[:10]],
+    }
 
 
 async def _leakcheck(ctx: ModuleContext, run_: ModuleRun) -> dict[str, Any] | None:
@@ -279,19 +385,27 @@ async def run(ctx: ModuleContext) -> ModuleResult:
     if not ctx.settings.has_key("hibp_api_key"):
         desactivees.append(
             {
+                "source": "HIBP — journaux d'infostealers",
+                "raison": "clé HIBP_API_KEY absente : ces recherches exigent une clé de "
+                          "palier « Pro »",
+            }
+        )
+        desactivees.append(
+            {
                 "source": "HIBP Domain Search",
                 "raison": "clé HIBP_API_KEY absente (offre payante) — les fuites du site "
                           "restent listées via l'endpoint public",
             }
         )
     elif not ctx.consents.domain_verified:
-        desactivees.append(
-            {
-                "source": "HIBP Domain Search",
-                "raison": "la case « domaine vérifié auprès de HIBP » n'a pas été cochée : la "
-                          "recherche de comptes est volontairement bloquée",
-            }
-        )
+        for source in ("HIBP Domain Search", "HIBP — journaux d'infostealers"):
+            desactivees.append(
+                {
+                    "source": source,
+                    "raison": "la case « domaine vérifié auprès de HIBP » n'a pas été cochée : "
+                              "la recherche de comptes est volontairement bloquée",
+                }
+            )
     else:
         domain_search = await _hibp_domain_search(ctx, run_)
         if domain_search is not None:
@@ -332,6 +446,88 @@ async def run(ctx: ModuleContext) -> ModuleResult:
                     "alerte automatiquement en cas de nouvelle fuite.",
                     [refs.OWASP_CREDENTIAL_STUFFING],
                 )
+
+        # ------------------------------------- journaux d'infostealers ----
+        collaborateurs = await _hibp_stealer_logs_email_domain(ctx, run_)
+        utilisateurs = await _hibp_stealer_logs_website_domain(ctx, run_)
+        run_.data["stealer_logs"] = {
+            "domaine_de_messagerie": collaborateurs,
+            "site_web": utilisateurs,
+        }
+
+        if collaborateurs and collaborateurs["comptes"]:
+            services = collaborateurs["services"]
+            exemples = ", ".join(
+                f"{e['compte']} ({', '.join(e['services']) or 'service non précisé'})"
+                for e in collaborateurs["exemples"][:6]
+            )
+            run_.add(
+                "BREACH_STEALER_LOG_STAFF", Severity.CRITIQUE,
+                f"{collaborateurs['comptes']} compte(s) du domaine capturés par un logiciel voleur",
+                f"Services concernés : {', '.join(services[:15]) or 'non précisés'}"
+                + (f" (et {len(services) - 15} autres)" if len(services) > 15 else "")
+                + f". Exemples masqués : {exemples}.",
+                "Un logiciel voleur d'identifiants s'est exécuté sur des postes utilisant ces "
+                "adresses, et a transmis les identifiants saisis dans le navigateur. "
+                "C'est bien plus grave qu'une fuite chez un prestataire : ce n'est pas un tiers "
+                "qui a été compromis, c'est la machine de la personne. Les mots de passe, mais "
+                "aussi les cookies de session, ont pu être volés — ce qui permet de contourner "
+                "l'authentification multifacteur. Ces données se revendent en lots et sont "
+                "exploitées rapidement.",
+                "Traiter les postes concernés comme compromis : les isoler et les réinstaller, "
+                "renouveler les mots de passe de tous les services listés depuis une machine "
+                "saine, révoquer les sessions et jetons en cours, puis activer "
+                "l'authentification multifacteur. La liste nominative des comptes est "
+                "consultable dans votre tableau de bord Have I Been Pwned.",
+                [refs.ANSSI_MOTS_DE_PASSE, refs.OWASP_CREDENTIAL_STUFFING, refs.CIS_CONTROLS],
+                {"comptes": collaborateurs["comptes"], "services": services[:60]},
+            )
+
+        if utilisateurs and utilisateurs["comptes"]:
+            repartition = ", ".join(
+                f"{fournisseur} : {nombre}"
+                for fournisseur, nombre in list(utilisateurs["par_fournisseur"].items())[:8]
+            )
+            run_.add(
+                "BREACH_STEALER_LOG_CUSTOMERS", Severity.ELEVE,
+                f"{utilisateurs['comptes']} utilisateur(s) de votre service ont eu leurs "
+                "identifiants capturés",
+                f"Répartition par fournisseur de messagerie : {repartition}. "
+                f"Exemples masqués : {', '.join(utilisateurs['exemples'][:6])}.",
+                "Ces personnes saisissaient leurs identifiants sur votre site lorsque leur "
+                "poste a été infecté par un logiciel voleur. Leurs comptes chez vous sont donc "
+                "directement exposés à une prise de contrôle, sans qu'aucune faille de votre "
+                "côté ne soit en cause. Les adresses ne sont affichées que masquées : la liste "
+                "nominative, nécessaire pour notifier les personnes, reste dans votre tableau "
+                "de bord Have I Been Pwned.",
+                "Forcer la réinitialisation du mot de passe de ces comptes, invalider leurs "
+                "sessions en cours, imposer l'authentification multifacteur et informer les "
+                "personnes concernées de l'infection de leur poste.",
+                [refs.OWASP_CREDENTIAL_STUFFING, refs.ANSSI_MOTS_DE_PASSE, refs.CIS_CONTROLS],
+                {
+                    "comptes": utilisateurs["comptes"],
+                    "par_fournisseur": utilisateurs["par_fournisseur"],
+                },
+            )
+
+        if (
+            collaborateurs is not None
+            and utilisateurs is not None
+            and not collaborateurs["comptes"]
+            and not utilisateurs["comptes"]
+        ):
+            run_.add(
+                "BREACH_STEALER_LOG_NONE", Severity.INFO,
+                "Aucune trace de logiciel voleur d'identifiants",
+                "Les journaux d'infostealers indexés par Have I Been Pwned ne référencent ni "
+                "compte de ce domaine, ni utilisateur ayant saisi ses identifiants sur ce site.",
+                "Aucun poste associé à ce domaine n'apparaît dans les lots d'identifiants "
+                "volés analysés à ce jour. Ces journaux ne couvrent évidemment qu'une partie "
+                "des infections réelles.",
+                "Maintenir la protection des postes et renouveler cette vérification "
+                "régulièrement.",
+                [refs.ANSSI_MOTS_DE_PASSE, refs.CIS_CONTROLS],
+            )
 
     # ------------------------------------------------- sources optionnelles --
     leakcheck = await _leakcheck(ctx, run_)
