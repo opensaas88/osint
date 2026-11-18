@@ -119,7 +119,32 @@ plafonnement    = un constat critique (deux SPF) → 69
 note            = D
 ```
 
-## 9. Ce que le score ne dit pas
+## 9. Projection : « et si on corrigeait ? »
+
+Le même modèle sert à estimer le score atteignable. Pour un ensemble de constats
+supposés corrigés, les scores de modules sont recalculés sans eux, puis le score
+global est recomposé à l'identique — renormalisation et plafonnement compris.
+
+Deux grandeurs sont présentées, et elles diffèrent volontairement :
+
+| Grandeur | Définition | À quoi elle sert |
+|---|---|---|
+| Gain isolé | score si **ce seul** constat était corrigé, moins le score actuel | Comparer les actions entre elles |
+| Gain marginal | ce que l'action apporte **à sa place dans le plan**, les précédentes étant faites | Décrire la progression réelle |
+
+L'écart vient du plafonnement. Tant qu'un constat critique subsiste, la note est
+bloquée à 69 : les autres corrections n'ont alors aucun effet visible, et affichent un
+gain isolé nul. Lever le critique libère d'un coup tous ces points. Afficher le seul
+gain isolé donnerait donc l'impression trompeuse que neuf actions sur dix « ne servent
+à rien ».
+
+Les actions sont ordonnées par gain isolé décroissant, puis par effort croissant, puis
+par gravité. L'effort — `rapide` (moins d'une heure), `modere` (une demi-journée),
+`important` (plusieurs jours) — est une donnée de **planification**, pas de détection :
+il est centralisé dans `app/remediation.py` et destiné à être ajusté au contexte de
+l'organisation.
+
+## 10. Ce que le score ne dit pas
 
 - **Il mesure une exposition observable de l'extérieur**, pas le niveau de sécurité
   interne : ni la gestion des correctifs, ni les sauvegardes, ni la sensibilisation

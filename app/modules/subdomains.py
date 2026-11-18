@@ -8,6 +8,7 @@ puis résolus, sans aucune connexion aux services qu'ils désignent.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from .. import refs
 from ..models import ModuleResult, ModuleStatus, Severity
@@ -21,6 +22,12 @@ DEPENDS_ON: tuple[str, ...] = ()
 TIMEOUT = 180.0
 
 CRTSH_URL = "https://crt.sh/"
+
+#: Seuils d'alerte sur l'expiration des certificats des sous-domaines, en jours.
+#: Volontairement serrés : les autorités automatisées renouvellent souvent à J-30,
+#: et alerter plus tôt produirait du bruit à chaque cycle de renouvellement.
+CERT_EXPIRY_CRITICAL_DAYS = 10
+CERT_EXPIRY_WARNING_DAYS = 20
 
 #: Noms évoquant un environnement hors production ou un outil d'administration.
 SENSITIVE_KEYWORDS: dict[str, str] = {
@@ -76,6 +83,47 @@ def parse_crtsh(payload) -> set[str]:
     return names
 
 
+def parse_crtsh_expiry(payload) -> dict[str, str]:
+    """Pour chaque nom, la date d'expiration du certificat le plus récent.
+
+    La transparence des certificats recense les certificats émis, pas ceux
+    réellement servis : un nom dont le dernier certificat connu expire bientôt
+    n'a, selon toute vraisemblance, pas encore été renouvelé — c'est un signal,
+    pas une preuve.
+    """
+    dernier: dict[str, str] = {}
+    if not isinstance(payload, list):
+        return dernier
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        fin = entry.get("not_after")
+        if not fin:
+            continue
+        for champ in ("name_value", "common_name"):
+            brut = entry.get(champ)
+            if not brut:
+                continue
+            for ligne in str(brut).split("\n"):
+                nom = ligne.strip().lower().rstrip(".").removeprefix("*.")
+                if not nom or " " in nom or "@" in nom:
+                    continue
+                if nom not in dernier or str(fin) > dernier[nom]:
+                    dernier[nom] = str(fin)
+    return dernier
+
+
+def days_until(date_iso: str) -> int | None:
+    """Nombre de jours avant une date crt.sh (horodatage naïf, considéré en UTC)."""
+    try:
+        echeance = datetime.fromisoformat(date_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if echeance.tzinfo is None:
+        echeance = echeance.replace(tzinfo=UTC)
+    return (echeance - datetime.now(UTC)).days
+
+
 def classify_sensitive(name: str) -> list[str]:
     """Retourne les motifs sensibles présents dans un nom d'hôte."""
     labels = set(name.split("."))
@@ -102,6 +150,7 @@ async def run(ctx: ModuleContext) -> ModuleResult:
         ),
     )
     names: set[str] = set()
+    expirations: dict[str, str] = {}
     succeeded: list[str] = []
     for params, label, retries in attempts:
         result = await ctx.http.request(
@@ -110,6 +159,9 @@ async def run(ctx: ModuleContext) -> ModuleResult:
         run_.source(result.source_ref(label=label))
         if result.ok:
             names |= parse_crtsh(result.payload)
+            for nom, fin in parse_crtsh_expiry(result.payload).items():
+                if nom not in expirations or fin > expirations[nom]:
+                    expirations[nom] = fin
             succeeded.append(label)
         else:
             run_.error(f"{label} : {result.describe_error()}")
@@ -200,6 +252,42 @@ async def run(ctx: ModuleContext) -> ModuleResult:
             "derrière un VPN ou un filtrage par IP, et éviter les noms descriptifs.",
             [refs.ANSSI_CARTOGRAPHIE, refs.CIS_INVENTAIRE],
             {"noms": sensibles},
+        )
+
+    # --- certificats de sous-domaines proches de l'expiration -------------
+    # L'apex est exclu : le module TLS analyse directement le certificat servi.
+    bientot: list[dict] = []
+    for record in alive:
+        fin = expirations.get(record["name"])
+        if not fin or record["name"] == ctx.name:
+            continue
+        jours = days_until(fin)
+        if jours is not None and jours <= CERT_EXPIRY_WARNING_DAYS:
+            bientot.append({"nom": record["name"], "expiration": fin[:10], "jours": jours})
+    bientot.sort(key=lambda item: item["jours"])
+    run_.data["certificats_proches_expiration"] = bientot
+
+    if bientot:
+        minimum = bientot[0]["jours"]
+        gravite = Severity.ELEVE if minimum <= CERT_EXPIRY_CRITICAL_DAYS else Severity.MOYEN
+        detail = "; ".join(
+            f"{item['nom']} → {item['expiration']} (dans {item['jours']} j)" for item in bientot[:8]
+        )
+        run_.add(
+            "SUBDOMAIN_CERT_EXPIRING", gravite,
+            f"{len(bientot)} sous-domaine(s) actifs dont le certificat expire sous "
+            f"{CERT_EXPIRY_WARNING_DAYS} jours",
+            f"{detail}. Aucun certificat plus récent n'apparaît dans les journaux de "
+            "transparence pour ces noms.",
+            "Quand un certificat expire, le navigateur bloque l'accès derrière un avertissement "
+            "de sécurité en pleine page : le service devient inutilisable pour vos visiteurs. "
+            "Ce constat se fonde sur les certificats publiés dans les journaux de transparence, "
+            "et non sur ce que le serveur présente réellement : si le renouvellement vient "
+            "d'avoir lieu, il peut n'être pas encore visible.",
+            "Vérifier que le renouvellement automatique fonctionne pour ces noms et superviser "
+            "les dates d'expiration, sous-domaines compris.",
+            [refs.ANSSI_TLS, refs.CIS_INVENTAIRE],
+            {"certificats": bientot[:30]},
         )
 
     if dead:

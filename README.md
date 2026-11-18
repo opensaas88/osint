@@ -186,8 +186,8 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 | 1 | Fuites de données | 15 | Have I Been Pwned (fuites, Domain Search, journaux d'infostealers), LeakCheck, Intelligence X | non (partiel) |
 | 2 | Ransomware | 10 | ransomware.live | non |
 | 3 | Hygiène email | 20 | DNS (MX, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI) | non |
-| 4 | Hygiène DNS | 10 | DNS (DNSSEC, NS, CAA), empreintes de reprise de sous-domaine | non |
-| 5 | Sous-domaines | 5 | crt.sh (Certificate Transparency) | non |
+| 4 | Hygiène DNS | 10 | RDAP (expiration et verrou du domaine), DNS (DNSSEC, NS, CAA), empreintes de reprise de sous-domaine | non |
+| 5 | Sous-domaines | 5 | crt.sh (Certificate Transparency, expiration des certificats) | non |
 | 6 | Services exposés | 15 | Shodan InternetDB, API Shodan | non (partiel) |
 | 7 | TLS & en-têtes HTTP | 15 | Poignée de main TLS, requête web standard | non |
 | 8 | Typosquatting | 5 | dnstwist + résolution DNS | non |
@@ -244,6 +244,37 @@ Chaque constat est présenté en trois temps : **le constat technique**, **ce qu
 cela signifie** en français courant, et **la recommandation**, accompagnée de ses
 références (ANSSI, CIS, OWASP, RFC).
 
+### Plan de remédiation et projection de score
+
+Le rapport ne se contente pas de constater : il chiffre ce que la correction rapporte.
+Chaque action est classée par gain de score et par effort estimé, et le plan affiche
+le niveau atteint à chaque étape.
+
+```
+  1. +14 → 83/B   moins d'une heure   Fusionner les deux enregistrements SPF
+  2.  +6 → 89/B   moins d'une heure   Publier une politique DMARC
+  3.  +2 → 91/A   moins d'une heure   Renouveler le nom de domaine
+```
+
+Deux notions distinctes apparaissent dans le rapport :
+
+- le **gain isolé** : ce que rapporterait la correction si elle était la seule menée ;
+- le **gain marginal** : ce qu'elle apporte réellement à sa place dans le plan.
+
+Les deux diffèrent dès qu'un constat critique plafonne la note : lever ce constat
+débloque d'un coup tous les points retenus par le plafond. C'est le gain marginal qui
+est affiché en priorité, car c'est lui qui décrit la progression réelle.
+
+L'effort est une estimation **paramétrable** dans `app/remediation.py` : un prestataire
+qui déploie DNSSEC en vingt minutes ajuste la table à son contexte.
+
+### Synthèse pour la direction
+
+La première page du rapport est écrite pour un décideur, pas pour un administrateur :
+le score, **les trois risques à retenir** formulés en conséquences concrètes, **les trois
+actions prioritaires** avec leur effort, et la note qui serait atteinte en les traitant.
+Le détail technique vient après.
+
 ### Rapports
 
 - **HTML autonome** : un seul fichier, sans ressource externe ni script, avec page
@@ -265,6 +296,8 @@ du score, les constats apparus, résolus et persistants.
 | `GET` | `/api/analyses/{id}/stream` | Flux d'événements SSE |
 | `GET` | `/api/analyses/{id}` | Rapport complet au format JSON |
 | `GET` | `/api/analyses?domain=` | Historique |
+| `GET` | `/api/analyses/{id}/plan` | Plan de remédiation : actions, effort, gain, score projeté |
+| `POST` | `/api/analyses/{id}/simulate` | Score obtenu si les constats indiqués étaient corrigés |
 | `GET` | `/api/compare?a=&b=` | Comparaison de deux analyses |
 | `GET` | `/api/analyses/{id}/report.html` | Rapport HTML autonome |
 | `GET` | `/api/analyses/{id}/report.pdf` | Rapport PDF |
@@ -313,6 +346,18 @@ plafonnement en présence d'un constat critique — est documentée dans
   `TYPO_MAX_PERMUTATIONS`.
 - **Si le DNS ne répond pas du tout**, les modules concernés s'abstiennent au lieu
   de conclure à une absence de configuration.
+- **RDAP dépend du registre de l'extension.** `rdap.org` redirige vers le serveur du
+  registre (`rdap.registry.cloud` pour `.cloud`, `rdap.afnic.fr` pour `.fr`…). Derrière
+  un réseau filtrant, chacun de ces hôtes doit être joignable. Certains registres
+  limitent aussi l'accès à leur service RDAP : le module le signale alors comme une
+  limite, sans produire de constat.
+- **L'expiration du renouvellement automatique n'est pas publique.** Un domaine qui
+  expire dans cinq jours avec renouvellement automatique actif est sain : le constat
+  le précise systématiquement plutôt que de crier au loup.
+- **L'expiration des certificats de sous-domaines** se fonde sur les journaux de
+  transparence, donc sur les certificats *émis* et non sur ceux réellement servis. Les
+  seuils sont volontairement serrés (20 jours) pour ne pas alerter à chaque cycle de
+  renouvellement automatique.
 
 ---
 
@@ -394,6 +439,7 @@ app/
 ├── resolver.py        Résolution DNS : système ou DNS-over-HTTPS
 ├── httpclient.py      Cache 24 h, politesse, nouvelles tentatives
 ├── sanitize.py        Masquage et suppression des champs sensibles
+├── remediation.py     Effort, gain et projection de score
 ├── scoring.py         Pondérations et barème
 └── storage.py         SQLite : analyses, cache, journal d'audit
 ```

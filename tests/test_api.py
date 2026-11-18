@@ -166,3 +166,44 @@ def test_exports_html_et_pdf(client):
 
     exports = [e["action"] for e in client.get("/api/audit").json()["journal"]]
     assert exports.count("export_rapport") == 2
+
+
+def test_plan_de_remediation_expose(client, settings):
+    """Le plan est calculé à la demande à partir du rapport persisté."""
+    import asyncio
+
+    from app.models import Finding, Severity
+
+    rapport = Report(
+        id="plan-1", domain="exemple.fr", domain_unicode="exemple.fr",
+        status=AnalysisStatus.DONE, started_at=datetime.now(UTC), score=75, grade="C",
+        actor="pytest", consents=Consents(authorization=True, passive_only=True),
+        modules=[ModuleResult(
+            key="email", label="Hygiène email", status=ModuleStatus.OK, score=75, weight=20,
+            findings=[Finding(
+                code="EMAIL_DMARC_MISSING", module="email", severity=Severity.ELEVE,
+                title="Pas de DMARC", constat="c", explication="e",
+                recommandation="publier DMARC",
+            )],
+        )],
+    )
+    asyncio.run(Store(settings.db_path).save_report(rapport))
+
+    plan = client.get("/api/analyses/plan-1/plan").json()
+    assert plan["score_actuel"] == 75
+    assert plan["etapes"][0]["code"] == "EMAIL_DMARC_MISSING"
+    assert plan["etapes"][0]["effort"] == "rapide"
+    assert plan["etapes"][0]["effort_label"] == "moins d'une heure"
+    assert plan["score_projete"] == 100
+    assert plan["gain_total"] == 25
+
+    simulation = client.post(
+        "/api/analyses/plan-1/simulate", json={"codes": ["EMAIL_DMARC_MISSING"]}
+    ).json()
+    assert simulation["score_projete"] == 100
+    assert simulation["gain"] == 25
+
+
+def test_plan_dune_analyse_inconnue(client):
+    assert client.get("/api/analyses/inexistante/plan").status_code == 404
+    assert client.post("/api/analyses/inexistante/simulate", json={"codes": []}).status_code == 404

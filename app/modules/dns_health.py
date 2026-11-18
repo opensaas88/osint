@@ -1,4 +1,5 @@
-"""Module 4 — hygiène DNS : DNSSEC, serveurs de noms, CAA, IPv6, risque de reprise de sous-domaine.
+"""Module 4 — hygiène DNS : enregistrement du domaine, DNSSEC, serveurs de noms, CAA,
+risque de reprise de sous-domaine.
 
 Le transfert de zone (AXFR) n'est pas tenté : il s'agit d'une sollicitation directe
 des serveurs de la cible, hors du périmètre strictement passif de l'outil.
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .. import refs
@@ -20,6 +22,13 @@ LABEL = MODULE_LABELS[KEY]
 WEIGHT = 10
 DEPENDS_ON: tuple[str, ...] = ("subdomains",)
 TIMEOUT = 120.0
+
+#: Service RDAP de redirection : il aiguille vers le serveur du registre de l'extension.
+RDAP_URL = "https://rdap.org/domain/{domain}"
+
+#: Seuils d'alerte sur l'expiration du nom de domaine, en jours.
+DOMAIN_EXPIRY_CRITICAL_DAYS = 15
+DOMAIN_EXPIRY_WARNING_DAYS = 45
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -49,6 +58,138 @@ def match_fingerprint(cname: str, fingerprints: list[dict]) -> str | None:
     return None
 
 
+def parse_rdap(payload: dict) -> dict:
+    """Extrait d'une réponse RDAP les dates d'événement et les verrous du domaine."""
+    evenements: dict[str, str] = {}
+    for evenement in payload.get("events") or []:
+        action = str(evenement.get("eventAction") or "").lower()
+        date = evenement.get("eventDate")
+        if action and date:
+            evenements[action] = str(date)
+
+    statuts = [str(s).lower().replace(" ", "") for s in payload.get("status") or []]
+    return {
+        "expiration": evenements.get("expiration"),
+        "creation": evenements.get("registration"),
+        "derniere_modification": evenements.get("lastchanged"),
+        "statuts": statuts,
+        "verrou_transfert": any("transferprohibited" in s for s in statuts),
+        "verrou_suppression": any("deleteprohibited" in s for s in statuts),
+    }
+
+
+def _jours_restants(date_iso: str | None) -> int | None:
+    if not date_iso:
+        return None
+    try:
+        echeance = datetime.fromisoformat(date_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if echeance.tzinfo is None:
+        echeance = echeance.replace(tzinfo=UTC)
+    return (echeance - datetime.now(UTC)).days
+
+
+async def check_domain_registration(ctx: ModuleContext, run_: ModuleRun) -> None:
+    """Interroge RDAP : expiration du nom de domaine et verrous posés par le registrar."""
+    result = await ctx.http.request("rdap", RDAP_URL.format(domain=ctx.name), retries=2)
+    run_.source(result.source_ref(label="RDAP (registre du nom de domaine)"))
+
+    if not result.ok or not isinstance(result.payload, dict):
+        run_.error(
+            "RDAP : impossible de lire l'enregistrement du domaine "
+            f"({result.describe_error()}). Certains registres restreignent l'accès à leur "
+            "service RDAP, ou le réseau de la machine d'analyse le bloque."
+        )
+        return
+
+    infos = parse_rdap(result.payload)
+    run_.data["enregistrement"] = infos
+    jours = _jours_restants(infos["expiration"])
+    run_.data["expiration_jours"] = jours
+
+    if jours is not None:
+        echeance = str(infos["expiration"])[:10]
+        rappel_auto = (
+            " Ce constat ne dit pas si le renouvellement automatique est actif : cette "
+            "information n'est pas publique. Vérifiez-le chez votre bureau d'enregistrement."
+        )
+        if jours < 0:
+            run_.add(
+                "DNS_DOMAIN_EXPIRED", Severity.CRITIQUE,
+                f"Le nom de domaine a expiré il y a {abs(jours)} jour(s)",
+                f"Date d'expiration relevée auprès du registre : {echeance}.",
+                "Un domaine expiré cesse de fonctionner : le site devient inaccessible et les "
+                "emails ne sont plus distribués. Après une période de grâce, il peut être "
+                "racheté par n'importe qui — y compris par un tiers qui en ferait un usage "
+                "frauduleux en se faisant passer pour vous.",
+                "Renouveler immédiatement auprès du bureau d'enregistrement, avant la fin de la "
+                "période de rédemption, puis activer le renouvellement automatique.",
+                [refs.ANSSI_NOMS_DE_DOMAINE, refs.CIS_INVENTAIRE],
+                {"expiration": infos["expiration"]},
+            )
+        elif jours <= DOMAIN_EXPIRY_CRITICAL_DAYS:
+            run_.add(
+                "DNS_DOMAIN_EXPIRING", Severity.ELEVE,
+                f"Le nom de domaine expire dans {jours} jour(s)",
+                f"Date d'expiration relevée auprès du registre : {echeance}.",
+                "À l'échéance, tout s'arrête d'un coup : site web, messagerie, applications "
+                "qui dépendent du domaine. La remise en service n'est pas instantanée, et un "
+                "domaine laissé expirer peut être capté par un tiers." + rappel_auto,
+                "Renouveler dès maintenant, et activer le renouvellement automatique avec un "
+                "moyen de paiement valide.",
+                [refs.ANSSI_NOMS_DE_DOMAINE],
+                {"expiration": infos["expiration"], "jours": jours},
+            )
+        elif jours <= DOMAIN_EXPIRY_WARNING_DAYS:
+            run_.add(
+                "DNS_DOMAIN_EXPIRING_SOON", Severity.MOYEN,
+                f"Le nom de domaine expire dans {jours} jours",
+                f"Date d'expiration relevée auprès du registre : {echeance}.",
+                "L'échéance approche. Un domaine oublié à son renouvellement interrompt "
+                "l'ensemble des services qui en dépendent." + rappel_auto,
+                "Vérifier que le renouvellement automatique est actif et que le moyen de "
+                "paiement associé est à jour.",
+                [refs.ANSSI_NOMS_DE_DOMAINE],
+                {"expiration": infos["expiration"], "jours": jours},
+            )
+        else:
+            run_.add(
+                "DNS_DOMAIN_EXPIRY_OK", Severity.INFO,
+                f"Le nom de domaine est enregistré jusqu'au {echeance}",
+                f"Expiration dans {jours} jours.",
+                "L'échéance d'enregistrement est suffisamment lointaine.",
+                "Conserver le renouvellement automatique et surveiller l'échéance.",
+                [refs.ANSSI_NOMS_DE_DOMAINE],
+            )
+
+    if infos["expiration"] is not None or infos["statuts"]:
+        if infos["verrou_transfert"]:
+            run_.add(
+                "DNS_DOMAIN_LOCKED", Severity.INFO,
+                "Le transfert du domaine est verrouillé",
+                "Statuts relevés : " + ", ".join(infos["statuts"]),
+                "Le verrou empêche qu'un tiers fasse transférer votre domaine vers un autre "
+                "bureau d'enregistrement à votre insu. C'est une bonne pratique.",
+                "Maintenir ce verrou et protéger le compte du bureau d'enregistrement par une "
+                "authentification multifacteur.",
+                [refs.ANSSI_NOMS_DE_DOMAINE],
+            )
+        else:
+            run_.add(
+                "DNS_DOMAIN_NO_LOCK", Severity.MOYEN,
+                "Aucun verrou de transfert sur le nom de domaine",
+                "Statuts relevés : " + (", ".join(infos["statuts"]) or "aucun"),
+                "Sans verrou, une personne ayant obtenu l'accès au compte du bureau "
+                "d'enregistrement peut faire transférer le domaine ailleurs. Le détournement "
+                "d'un nom de domaine est l'une des attaques les plus difficiles à défaire : "
+                "l'attaquant contrôle alors le site, les emails et les certificats.",
+                "Activer le verrou de transfert (« clientTransferProhibited ») chez le bureau "
+                "d'enregistrement, et y imposer l'authentification multifacteur.",
+                [refs.ANSSI_NOMS_DE_DOMAINE, refs.CIS_CONTROLS],
+            )
+
+
 async def run(ctx: ModuleContext) -> ModuleResult:
     """Évalue la robustesse de la configuration DNS du domaine."""
     run_ = ModuleRun(KEY)
@@ -66,6 +207,9 @@ async def run(ctx: ModuleContext) -> ModuleResult:
             "le domaine ne renvoie aucun enregistrement DNS (domaine expiré, non délégué, "
             "ou résolution impossible)"
         )
+
+    # ------------------------------------------- enregistrement du domaine --
+    await check_domain_registration(ctx, run_)
 
     # -------------------------------------------------------------- DNSSEC --
     dnskey = await ctx.resolver.query(ctx.name, "DNSKEY")

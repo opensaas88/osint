@@ -176,6 +176,42 @@ function renderResults(summary) {
     </div>`;
 }
 
+function renderPlan(plan) {
+  if (!plan || !plan.etapes || !plan.etapes.length) return;
+  const cible = $("plan");
+  cible.classList.remove("hidden");
+  const projection = plan.etapes.slice(0, 3);
+  const apres = projection.length ? projection[projection.length - 1] : null;
+
+  cible.innerHTML = `
+    <h3 class="text-lg font-semibold mb-1">Plan de remédiation</h3>
+    <p class="muted text-xs mb-3">Actions classées par gain de score et par effort.
+      « Gain » = points apportés par l'action à ce stade du plan ; « score » = niveau atteint
+      une fois cette action et les précédentes réalisées.</p>
+    ${apres ? `<div class="rounded-md px-3 py-2 mb-3 text-sm"
+       style="background:var(--good-track)">
+      En traitant les ${projection.length} premières actions, le score passerait de
+      <strong>${plan.score_actuel}/100 (${esc(plan.note_actuelle)})</strong> à
+      <strong>${apres.score_cumule}/100 (${esc(apres.grade_cumule)})</strong>.
+      Plan complet : <strong>${plan.score_projete}/100 (${esc(plan.note_projetee)})</strong>.
+    </div>` : ""}
+    <div class="table-wrap"><table class="data" style="min-width:620px">
+      <thead><tr><th>#</th><th>Action</th><th>Module</th><th>Effort</th>
+        <th class="num">Gain</th><th class="num">Score</th></tr></thead>
+      <tbody>${plan.etapes.map((e, i) => `<tr>
+        <td class="num muted">${i + 1}</td>
+        <td><span style="color:${SEVERITIES[e.severity].color}">${SEVERITIES[e.severity].glyph}</span>
+          ${esc(e.title)}<br><span class="muted text-xs">${esc(e.recommandation)}</span></td>
+        <td>${esc(e.module_label)}</td>
+        <td class="muted">${esc(e.effort_label)}</td>
+        <td class="num" style="color:var(--good);font-weight:600">${e.gain_marginal > 0 ? "+" + e.gain_marginal : "—"}</td>
+        <td class="num">${e.score_cumule} / ${esc(e.grade_cumule)}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+    ${plan.etapes_totales > plan.etapes.length
+      ? `<p class="muted text-xs mt-2">${plan.etapes_totales} actions au total.</p>` : ""}`;
+}
+
 function renderBusinessViews(modules) {
   const byKey = Object.fromEntries(modules.map((m) => [m.key, m]));
   const timeline = byKey.breaches?.data?.chronologie || [];
@@ -365,6 +401,7 @@ async function launch() {
   $("launch").disabled = true;
   state.results = {};
   $("results").classList.add("hidden");
+  $("plan").classList.add("hidden");
   $("comparison").innerHTML = "";
 
   let response;
@@ -418,11 +455,18 @@ async function launch() {
     state.results[data.key] = data.result;
     renderProgress();
   });
-  source.addEventListener("analysis_done", (event) => {
+  source.addEventListener("analysis_done", async (event) => {
     renderResults(JSON.parse(event.data));
     $("launch").disabled = false;
     source.close();
     loadHistory(null);
+    try {
+      const reponse = await fetch(
+        `/api/analyses/${encodeURIComponent(state.analysisId)}/plan?limite=12`);
+      if (reponse.ok) renderPlan(await reponse.json());
+    } catch (exc) {
+      /* le plan est un confort : son absence ne doit pas masquer les résultats */
+    }
   });
   source.addEventListener("analysis_failed", (event) => {
     const data = JSON.parse(event.data);

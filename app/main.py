@@ -21,6 +21,7 @@ from .config import get_settings
 from .models import AnalysisStatus, Consents
 from .modules import MODULE_LABELS
 from .orchestrator import AnalysisChannel, Orchestrator, purge_expired
+from .remediation import build_plan, simulate
 from .scoring import CRITICAL_SCORE_CAP, GRADE_SCALE, MODULE_WEIGHTS
 from .storage import Store
 from .validation import InvalidDomain, normalize_domain
@@ -38,6 +39,12 @@ class AnalysisRequest(BaseModel):
     authorization: bool = False
     passive_only: bool = False
     domain_verified: bool = False
+
+
+class SimulationRequest(BaseModel):
+    """Constats dont on veut simuler la correction."""
+
+    codes: list[str] = Field(default_factory=list, max_length=200)
 
 
 def create_app(settings=None, store=None) -> FastAPI:
@@ -217,6 +224,26 @@ def create_app(settings=None, store=None) -> FastAPI:
                 return JSONResponse({"id": analysis_id, "status": AnalysisStatus.RUNNING.value})
             raise HTTPException(status_code=404, detail={"erreur": "analyse inconnue"})
         return JSONResponse(report)
+
+    @app.get("/api/analyses/{analysis_id}/plan")
+    async def remediation_plan(
+        analysis_id: str, limite: int = Query(default=10, ge=1, le=100)
+    ) -> dict[str, Any]:
+        """Plan de remédiation : actions triées par gain, effort et score projeté."""
+        report = await store.get_report(analysis_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail={"erreur": "analyse inconnue"})
+        return build_plan(report.get("modules") or [], limite=limite)
+
+    @app.post("/api/analyses/{analysis_id}/simulate")
+    async def remediation_simulate(
+        analysis_id: str, payload: SimulationRequest
+    ) -> dict[str, Any]:
+        """Score et note obtenus si les constats indiqués étaient corrigés."""
+        report = await store.get_report(analysis_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail={"erreur": "analyse inconnue"})
+        return simulate(report.get("modules") or [], payload.codes)
 
     @app.get("/api/compare")
     async def compare(a: str = Query(...), b: str = Query(...)) -> dict[str, Any]:

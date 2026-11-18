@@ -39,38 +39,77 @@
   <div class="score-caption">Aucun module n'a produit de résultat exploitable.</div>
   {% endif %}
 
-  <dl class="cover-meta">
-    <dt>Date de l'analyse</dt><dd>{{ report.started_at|dt }}</dd>
-    <dt>Opérateur</dt><dd>{{ report.actor }}</dd>
-    <dt>Identifiant</dt><dd class="code">{{ report.id }}</dd>
-    <dt>Constats</dt><dd>{{ total_findings }} dont {{ counts.critique }} critique(s) et
-      {{ counts.eleve }} élevé(s)</dd>
-    <dt>Modules exploités</dt><dd>{{ modules_actifs }} sur {{ report.modules|length }}</dd>
-    <dt>Résolution DNS</dt><dd>{{ report.dns_backend or 'non précisée' }}</dd>
-    <dt>Version de l'outil</dt><dd>DomainExposure {{ report.app_version }}</dd>
-  </dl>
+  {% if risques_majeurs %}
+  <div class="essentiel">
+    <h2 class="essentiel-titre">L'essentiel</h2>
+    {% for risque in risques_majeurs %}
+    <div class="risque">
+      <div class="risque-entete">
+        <span class="badge" style="color: {{ severities[risque.severity].color }}">
+          {{ severities[risque.severity].glyph }} {{ severities[risque.severity].label }}</span>
+        <strong>{{ risque.title }}</strong>
+      </div>
+      <p class="risque-impact">{{ risque.impact }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if plan_prioritaire %}
+  <div class="essentiel">
+    <h2 class="essentiel-titre">Et si on corrigeait ?</h2>
+    <table class="actions">
+      {% for etape in plan_prioritaire %}
+      <tr>
+        <td class="action-rang">{{ loop.index }}</td>
+        <td class="action-texte">
+          <strong>{{ etape.title }}</strong><br>
+          <small>{{ etape.recommandation }}</small>
+        </td>
+        <td class="action-effort">{{ etape.effort_label }}</td>
+        <td class="action-gain">{% if etape.gain_marginal > 0 %}+{{ etape.gain_marginal }}{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="projection">
+      En traitant ces {{ plan_prioritaire|length }} point{{ 's' if plan_prioritaire|length > 1 }},
+      le score passerait de <strong>{{ plan.score_actuel }}/100 ({{ plan.note_actuelle }})</strong>
+      à <strong>{{ projection_courte }}/100 ({{ projection_courte_note }})</strong>.
+      {% if plan.etapes_totales > plan_prioritaire|length %}
+      Le plan complet, qui compte {{ plan.etapes_totales }} actions, figure plus loin dans ce
+      rapport.
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
 
   <div class="notice">
-    <strong>Cadre de l'analyse.</strong> Ce rapport repose exclusivement sur des sources
-    ouvertes et des requêtes passives. Aucun balayage de ports, aucune tentative
-    d'authentification et aucun transfert de zone n'a été effectué sur les systèmes du
-    domaine analysé. Seules des métadonnées de fuites sont collectées : aucun mot de passe,
-    empreinte ou donnée personnelle en clair n'est consulté, stocké ni affiché ; les adresses
-    éventuellement citées sont masquées.<br><br>
-    <strong>Attestations recueillies avant l'analyse.</strong>
-    autorisation du propriétaire ou cadre contractuel :
-    <strong>{{ 'oui' if report.consents.authorization else 'non' }}</strong> ;
-    engagement de collecte strictement passive :
-    <strong>{{ 'oui' if report.consents.passive_only else 'non' }}</strong> ;
-    propriété du domaine vérifiée auprès de Have I Been Pwned :
-    <strong>{{ 'oui' if report.consents.domain_verified else 'non' }}</strong>.
-    Ces attestations et leur horodatage figurent dans le journal d'audit de l'application.
+    <strong>Périmètre.</strong> Analyse par sources ouvertes et requêtes passives uniquement :
+    aucun balayage de ports, aucune tentative d'authentification, aucun transfert de zone sur les
+    systèmes du domaine. Seules des métadonnées de fuites sont collectées ; aucune donnée
+    personnelle en clair n'est consultée ni stockée.<br>
+    Analyse du {{ report.started_at|dt }} — opérateur : {{ report.actor }} —
+    {{ modules_actifs }} module{{ 's' if modules_actifs > 1 }} exploité{{ 's' if modules_actifs > 1 }}
+    sur {{ report.modules|length }} — {{ total_findings }} constat{{ 's' if total_findings > 1 }}.
   </div>
 </section>
 
 {# ==================================================== synthèse exécutive == #}
 <section>
   <h2>Synthèse exécutive</h2>
+
+  <dl class="cover-meta">
+    <dt>Domaine analysé</dt><dd>{{ report.domain_unicode or report.domain }}</dd>
+    <dt>Date de l'analyse</dt><dd>{{ report.started_at|dt }}</dd>
+    <dt>Opérateur</dt><dd>{{ report.actor }}</dd>
+    <dt>Identifiant</dt><dd class="code">{{ report.id }}</dd>
+    <dt>Modules exploités</dt><dd>{{ modules_actifs }} sur {{ report.modules|length }}</dd>
+    <dt>Résolution DNS</dt><dd>{{ report.dns_backend or 'non précisée' }}</dd>
+    <dt>Attestations</dt><dd>autorisation : {{ 'oui' if report.consents.authorization else 'non' }}
+      · collecte passive : {{ 'oui' if report.consents.passive_only else 'non' }}
+      · domaine vérifié : {{ 'oui' if report.consents.domain_verified else 'non' }}</dd>
+    <dt>Version de l'outil</dt><dd>DomainExposure {{ report.app_version }}</dd>
+  </dl>
 
   {% if report.notes %}
     {% for note in report.notes %}<p><strong>À noter :</strong> {{ note }}</p>{% endfor %}
@@ -123,27 +162,48 @@
     ci-dessus et renormalisée sur les seuls modules exploités : un module désactivé n'est ni
     pénalisant ni avantageux. La formule complète figure dans SCORING.md.</small></p>
 
-  {% if top_findings %}
-  <h3>Priorités d'action</h3>
+  {% if plan.etapes %}
+  <h3>Plan de remédiation</h3>
+  <p><small>Actions classées par gain de score et par effort. La colonne « gain » indique les
+    points apportés par l'action à ce stade du plan ; la colonne « score » le niveau atteint une
+    fois cette action et les précédentes réalisées. L'effort est une estimation paramétrable
+    (<span class="code">app/remediation.py</span>).</small></p>
   <table class="data">
-    <thead><tr><th>Gravité</th><th>Constat</th><th>Module</th><th>Action attendue</th></tr></thead>
+    <thead><tr><th>#</th><th>Action</th><th>Module</th><th>Effort</th>
+      <th class="num">Gain</th><th class="num">Score</th></tr></thead>
     <tbody>
-    {% for finding in top_findings %}
+    {% for etape in plan.etapes %}
       <tr>
-        <td style="color: {{ severities[finding.severity].color }}; font-weight: 600; white-space: nowrap">
-          {{ severities[finding.severity].glyph }} {{ severities[finding.severity].label }}
+        <td class="num">{{ loop.index }}</td>
+        <td>
+          <span style="color: {{ severities[etape.severity].color }}; font-weight: 600">
+            {{ severities[etape.severity].glyph }}</span>
+          {{ etape.title }}<br><small>{{ etape.recommandation }}</small>
         </td>
-        <td>{{ finding.title }}</td>
-        <td>{{ module_labels.get(finding.module, finding.module) }}</td>
-        <td>{{ finding.recommandation }}</td>
+        <td>{{ etape.module_label }}</td>
+        <td>{{ etape.effort_label }}</td>
+        <td class="num">{% if etape.gain_marginal > 0 %}+{{ etape.gain_marginal }}{% else %}—{% endif %}</td>
+        <td class="num">{{ etape.score_cumule }} / {{ etape.grade_cumule }}</td>
       </tr>
     {% endfor %}
+      <tr class="plan-total">
+        <td></td>
+        <td colspan="3">Si l'ensemble du plan est réalisé</td>
+        <td class="num">+{{ plan.gain_total }}</td>
+        <td class="num">{{ plan.score_projete }} / {{ plan.note_projetee }}</td>
+      </tr>
     </tbody>
   </table>
-  {% else %}
-  <h3>Priorités d'action</h3>
-  <p class="empty">Aucun constat de gravité critique ou élevée.</p>
+  {% if plan.etapes_totales > plan.etapes|length %}
+  <p><small>{{ plan.etapes_totales }} actions au total ; les
+    {{ plan.etapes|length }} premières sont détaillées ici. Les constats restants figurent dans
+    le détail technique.</small></p>
   {% endif %}
+  {% else %}
+  <h3>Plan de remédiation</h3>
+  <p class="empty">Aucune action corrective identifiée : les constats relevés sont informatifs.</p>
+  {% endif %}
+
 </section>
 
 {# ======================================================== vues métier ==== #}

@@ -32,6 +32,7 @@ SOURCE_RATE_LIMITS: dict[str, float] = {
     "urlhaus": 0.4,
     "leakcheck": 1.0,
     "intelx": 1.0,
+    "rdap": 0.5,
     "doh": 0.0,
     "cible": 0.0,
 }

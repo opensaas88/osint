@@ -246,3 +246,57 @@ table.data tr { page-break-inside: avoid; }
 .empty { font-size: 9.5pt; color: var(--text-muted); font-style: italic; }
 .errors { font-size: 8.5pt; color: var(--text-secondary); margin-top: 5px; }
 .errors li { margin-bottom: 2px; }
+
+/* ------------------------------------------- synthèse pour la direction --- */
+.essentiel { margin-top: 10mm; }
+.essentiel-titre {
+  font-size: 9pt;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border: none;
+  padding: 0;
+  margin: 0 0 7px;
+}
+.risque {
+  padding: 7px 0;
+  border-top: 1px solid var(--rule);
+  page-break-inside: avoid;
+}
+.risque-entete { display: flex; gap: 8px; align-items: baseline; font-size: 10.5pt; }
+.risque-impact { margin: 3px 0 0; font-size: 9.5pt; color: var(--text-secondary); }
+
+table.actions { width: 100%; border-collapse: collapse; }
+table.actions td {
+  padding: 7px 6px;
+  border-top: 1px solid var(--rule);
+  vertical-align: top;
+  font-size: 9.5pt;
+}
+.action-rang {
+  width: 7mm;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.action-texte small { color: var(--text-secondary); }
+.action-effort { width: 32mm; color: var(--text-secondary); white-space: nowrap; }
+.action-gain {
+  width: 16mm;
+  text-align: right;
+  font-weight: 600;
+  color: var(--good);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.projection {
+  margin-top: 9px;
+  padding: 8px 10px;
+  background: var(--good-track);
+  border-radius: 4px;
+  font-size: 9.5pt;
+}
+.plan-total {
+  background: var(--surface-2);
+  font-weight: 600;
+}

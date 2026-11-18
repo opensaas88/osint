@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ..models import SEVERITY_ORDER, Severity
 from ..modules import MODULE_LABELS
+from ..remediation import build_plan
 from ..scoring import CRITICAL_SCORE_CAP
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
@@ -51,6 +53,27 @@ GRADE_STYLE: dict[str, dict[str, str]] = {
     "F": {"color": "#d03b3b", "track": "#f5dfde",
           "libelle": "Exposition critique : traitement immédiat."},
 }
+
+
+def resume_impact(texte: str, maximum: int = 320) -> str:
+    """Accroche d'une explication pour la synthèse destinée à la direction.
+
+    Conserve les premières phrases dans la limite impartie : la première pose le
+    fait, la suivante porte généralement la conséquence concrète, qui est ce qui
+    parle à un décideur.
+    """
+    texte = " ".join((texte or "").split())
+    if len(texte) <= maximum:
+        return texte
+    phrases = re.split(r"(?<=[.!?])\s+", texte)
+    retenu = ""
+    for phrase in phrases:
+        if retenu and len(retenu) + len(phrase) + 1 > maximum:
+            break
+        retenu = f"{retenu} {phrase}".strip()
+    if not retenu:
+        retenu = texte[: maximum - 1].rstrip()
+    return retenu if len(retenu) <= maximum else retenu[: maximum - 1].rstrip() + "…"
 
 
 def _format_datetime(value: Any) -> str:
@@ -171,6 +194,46 @@ def build_context(report: dict[str, Any], settings) -> dict[str, Any]:
     ]
     subdomain_rows = (subdomains_data.get("records") or [])[:80]
 
+    # Plan de remédiation : ce que coûte la correction et ce qu'elle rapporte.
+    plan = build_plan(modules, limite=8)
+    plan_prioritaire = plan["etapes"][:3]
+    projection_courte = (
+        plan_prioritaire[-1]["score_cumule"] if plan_prioritaire else report.get("score")
+    )
+    projection_courte_note = (
+        plan_prioritaire[-1]["grade_cumule"] if plan_prioritaire else report.get("grade")
+    )
+
+    # Les trois risques à retenir, dans l'ordre de gravité.
+    risques_majeurs = [
+        {
+            "severity": finding["severity"],
+            "title": finding["title"],
+            "impact": resume_impact(finding.get("explication", "")),
+            "module": MODULE_LABELS.get(finding["module"], finding["module"]),
+        }
+        for finding in top_findings[:3]
+    ]
+    if len(risques_majeurs) < 3:
+        complement = sorted(
+            (
+                f
+                for m in modules
+                for f in m.get("findings") or []
+                if f["severity"] in ("moyen", "faible")
+            ),
+            key=lambda f: (SEVERITY_ORDER[Severity(f["severity"])], f["code"]),
+        )
+        for finding in complement[: 3 - len(risques_majeurs)]:
+            risques_majeurs.append(
+                {
+                    "severity": finding["severity"],
+                    "title": finding["title"],
+                    "impact": resume_impact(finding.get("explication", "")),
+                    "module": MODULE_LABELS.get(finding["module"], finding["module"]),
+                }
+            )
+
     score = report.get("score")
     grade = report.get("grade") or (
         "F" if score is not None and score < 50 else "—"
@@ -196,6 +259,11 @@ def build_context(report: dict[str, Any], settings) -> dict[str, Any]:
         "severities": SEVERITY_STYLE,
         "statuts": STATUS_LABELS,
         "module_labels": MODULE_LABELS,
+        "plan": plan,
+        "plan_prioritaire": plan_prioritaire,
+        "projection_courte": projection_courte,
+        "projection_courte_note": projection_courte_note,
+        "risques_majeurs": risques_majeurs,
         "score_style": score_style,
         "plafond_critique": CRITICAL_SCORE_CAP,
         "cache_heures": settings.cache_ttl_hours,
