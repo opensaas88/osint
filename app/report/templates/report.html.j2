@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DomainExposure — {{ report.domain_unicode or report.domain }}</title>
+<style>{{ css|safe }}</style>
+</head>
+<body>
+
+{# ======================================================== page de garde == #}
+<section class="cover">
+  <div class="cover-kicker">Rapport d'exposition cyber — OSINT passif</div>
+  <h1>DomainExposure</h1>
+  <div class="cover-domain">{{ report.domain_unicode or report.domain }}
+    {%- if report.domain_unicode and report.domain_unicode != report.domain %}
+    <br><small>forme ASCII : {{ report.domain }}</small>
+    {%- endif %}
+  </div>
+
+  {% if report.score is not none %}
+  <div class="score-block">
+    <div>
+      <div class="score-hero">{{ report.score }}<span class="score-hero-unit">/100</span></div>
+      <div class="score-caption">Score global d'exposition</div>
+    </div>
+    <div class="score-grade" style="background: {{ score_style.color }}">{{ report.grade }}</div>
+  </div>
+  <div class="meter meter-wide" style="background: {{ score_style.track }}">
+    <div class="meter-fill" style="width: {{ report.score }}%; background: {{ score_style.color }}"></div>
+  </div>
+  <div class="score-caption">
+    {{ score_style.libelle }}
+    {%- if report.score_capped_by_critical %} — score plafonné à {{ plafond_critique }} par la
+    présence d'au moins un constat critique.{% endif %}
+  </div>
+  {% else %}
+  <div class="score-hero">—</div>
+  <div class="score-caption">Aucun module n'a produit de résultat exploitable.</div>
+  {% endif %}
+
+  <dl class="cover-meta">
+    <dt>Date de l'analyse</dt><dd>{{ report.started_at|dt }}</dd>
+    <dt>Opérateur</dt><dd>{{ report.actor }}</dd>
+    <dt>Identifiant</dt><dd class="code">{{ report.id }}</dd>
+    <dt>Constats</dt><dd>{{ total_findings }} dont {{ counts.critique }} critique(s) et
+      {{ counts.eleve }} élevé(s)</dd>
+    <dt>Modules exploités</dt><dd>{{ modules_actifs }} sur {{ report.modules|length }}</dd>
+    <dt>Résolution DNS</dt><dd>{{ report.dns_backend or 'non précisée' }}</dd>
+    <dt>Version de l'outil</dt><dd>DomainExposure {{ report.app_version }}</dd>
+  </dl>
+
+  <div class="notice">
+    <strong>Cadre de l'analyse.</strong> Ce rapport repose exclusivement sur des sources
+    ouvertes et des requêtes passives. Aucun balayage de ports, aucune tentative
+    d'authentification et aucun transfert de zone n'a été effectué sur les systèmes du
+    domaine analysé. Seules des métadonnées de fuites sont collectées : aucun mot de passe,
+    empreinte ou donnée personnelle en clair n'est consulté, stocké ni affiché ; les adresses
+    éventuellement citées sont masquées.<br><br>
+    <strong>Attestations recueillies avant l'analyse.</strong>
+    autorisation du propriétaire ou cadre contractuel :
+    <strong>{{ 'oui' if report.consents.authorization else 'non' }}</strong> ;
+    engagement de collecte strictement passive :
+    <strong>{{ 'oui' if report.consents.passive_only else 'non' }}</strong> ;
+    propriété du domaine vérifiée auprès de Have I Been Pwned :
+    <strong>{{ 'oui' if report.consents.domain_verified else 'non' }}</strong>.
+    Ces attestations et leur horodatage figurent dans le journal d'audit de l'application.
+  </div>
+</section>
+
+{# ==================================================== synthèse exécutive == #}
+<section>
+  <h2>Synthèse exécutive</h2>
+
+  {% if report.notes %}
+    {% for note in report.notes %}<p><strong>À noter :</strong> {{ note }}</p>{% endfor %}
+  {% endif %}
+
+  <h3>Répartition des constats par gravité</h3>
+  {% if segments %}
+  {# Barre segmentée : un tout découpé en parts, 28 px, écarts de 2 px dans la couleur du
+     support, part de chaque bloc imprimée à l'intérieur ; la légende nomme les blocs. #}
+  <div class="segbar">
+    {% for seg in segments %}
+    <div class="segbar-part {% if seg.on_light %}on-light{% endif %}"
+         style="width: {{ seg.share }}%; background: {{ seg.color }}"
+         title="{{ seg.label }} : {{ seg.count }} constat(s)">
+      {%- if seg.share >= 9 %}{{ seg.count }}{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <div class="segbar-legend">
+    {% for seg in segments %}
+    <span><span class="swatch" style="background: {{ seg.color }}"></span>{{ seg.glyph }}
+      {{ seg.label }}{% if seg.share < 9 %} ({{ seg.count }}){% endif %}</span>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">Aucun constat enregistré.</p>
+  {% endif %}
+
+  <h3>Score par module</h3>
+  {# Meter list : un nom, une barre et un chiffre par ligne, barres alignées. #}
+  <table class="meter-list">
+    {% for module in modules_meter %}
+    <tr>
+      <td class="ml-name">{{ module.label }}</td>
+      <td class="ml-bar">
+        {% if module.score is not none %}
+        <div class="meter" style="background: {{ module.track }}">
+          <div class="meter-fill" style="width: {{ module.score }}%; background: {{ module.color }}"></div>
+        </div>
+        {% else %}
+        <span class="ml-off">{{ module.disabled_reason or 'non exploité' }}</span>
+        {% endif %}
+      </td>
+      <td class="ml-score">{{ module.score if module.score is not none else '—' }}</td>
+      <td class="ml-weight">poids {{ module.weight }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p><small>Le score global est la moyenne des scores de modules, pondérée par les poids
+    ci-dessus et renormalisée sur les seuls modules exploités : un module désactivé n'est ni
+    pénalisant ni avantageux. La formule complète figure dans SCORING.md.</small></p>
+
+  {% if top_findings %}
+  <h3>Priorités d'action</h3>
+  <table class="data">
+    <thead><tr><th>Gravité</th><th>Constat</th><th>Module</th><th>Action attendue</th></tr></thead>
+    <tbody>
+    {% for finding in top_findings %}
+      <tr>
+        <td style="color: {{ severities[finding.severity].color }}; font-weight: 600; white-space: nowrap">
+          {{ severities[finding.severity].glyph }} {{ severities[finding.severity].label }}
+        </td>
+        <td>{{ finding.title }}</td>
+        <td>{{ module_labels.get(finding.module, finding.module) }}</td>
+        <td>{{ finding.recommandation }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <h3>Priorités d'action</h3>
+  <p class="empty">Aucun constat de gravité critique ou élevée.</p>
+  {% endif %}
+</section>
+
+{# ======================================================== vues métier ==== #}
+{% if timeline or cve_rows or subdomain_rows %}
+<section class="page-break">
+  <h2>Vues de synthèse</h2>
+
+  {% if timeline %}
+  <h3>Chronologie des fuites de données</h3>
+  <ul class="timeline">
+    {% for item in timeline %}
+    <li>
+      <span class="tl-date">{{ item.date or 'date inconnue' }}</span> — <strong>{{ item.nom }}</strong>
+      {%- if item.comptes %} · {{ item.comptes|nombre }} comptes{% endif %}
+      {%- if not item.verifiee %} · <span class="pill">non confirmée</span>{% endif %}
+      {%- if item.categories %}<br><small>Catégories exposées :
+        {{ item.categories|join(', ') }}</small>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if cve_rows %}
+  <h3>Vulnérabilités connues sur les adresses exposées</h3>
+  <table class="data">
+    <thead><tr><th>Adresse IP</th><th>Références CVE</th><th>Ports observés</th>
+      <th>Infrastructure</th></tr></thead>
+    <tbody>
+    {% for row in cve_rows %}
+      <tr>
+        <td class="code">{{ row.ip }}</td>
+        <td>{{ row.vulns|join(', ') }}</td>
+        <td class="code">{{ row.ports|join(', ') }}</td>
+        <td>{{ 'mutualisée — non imputable' if row.mutualisee else 'dédiée' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p><small>Ces références proviennent de la bannière annoncée par chaque service, telle
+    qu'observée par Shodan. Un correctif appliqué sans changement de numéro de version peut
+    produire un faux positif : chaque référence doit être vérifiée sur la machine.</small></p>
+  {% endif %}
+
+  {% if subdomain_rows %}
+  <h3>Sous-domaines publiés dans les journaux de certificats</h3>
+  <table class="data">
+    <thead><tr><th>Sous-domaine</th><th>Adresses</th><th>Alias (CNAME)</th><th>État</th></tr></thead>
+    <tbody>
+    {% for row in subdomain_rows %}
+      <tr>
+        <td class="code">{{ row.name }}</td>
+        <td class="code">{{ row.a|join(', ') or '—' }}</td>
+        <td class="code">{{ row.cname|join(', ') or '—' }}</td>
+        <td>{{ 'actif' if row.resolves else 'ne résout plus' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if subdomain_truncated %}
+  <p><small>Liste tronquée par la limite de résolution configurée
+    (SUBDOMAIN_RESOLVE_LIMIT).</small></p>
+  {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
+{# ===================================================== détails techniques = #}
+<section class="page-break">
+  <h2>Détails techniques par module</h2>
+
+  {% for module in report.modules %}
+  <div class="module">
+    <div class="module-head">
+      <h3>{{ module.label }}</h3>
+      <span class="module-status">
+        {% if module.score is not none %}score {{ module.score }}/100 · {% endif %}
+        poids {{ module.weight }} · <span class="pill">{{ statuts.get(module.status, module.status) }}</span>
+      </span>
+    </div>
+
+    {% if module.disabled_reason %}
+    <p class="empty">Module non exploité : {{ module.disabled_reason }}.</p>
+    {% endif %}
+
+    {% for finding in module.findings %}
+    {% set meta = severities[finding.severity] %}
+    <div class="finding" style="border-left-color: {{ meta.color }}">
+      <div class="finding-head">
+        <h4>{{ finding.title }}</h4>
+        <span class="badge" style="color: {{ meta.color }}">{{ meta.glyph }} {{ meta.label }}</span>
+      </div>
+      <dl>
+        <dt>Constat</dt><dd>{{ finding.constat }}</dd>
+        <dt>Ce que cela signifie</dt><dd>{{ finding.explication }}</dd>
+        <dt>Recommandation</dt><dd>{{ finding.recommandation }}</dd>
+      </dl>
+      {% if finding.references %}
+      <div class="refs">
+        <strong>Références :</strong>
+        {% for ref in finding.references %}
+          {{ ref.framework }} — {{ ref.label }}{% if not loop.last %} · {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="refs"><span class="code">{{ finding.code }}</span></div>
+    </div>
+    {% endfor %}
+
+    {% if not module.findings and not module.disabled_reason %}
+    <p class="empty">Aucun constat pour ce module.</p>
+    {% endif %}
+
+    {% if module.errors %}
+    <div class="errors"><strong>Limites rencontrées :</strong>
+      <ul>{% for error in module.errors %}<li>{{ error }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+{# ================================================================ annexes = #}
+<section class="page-break">
+  <h2>Annexes</h2>
+
+  <h3>Sources consultées</h3>
+  {% if sources %}
+  <table class="data">
+    <thead><tr><th>Source</th><th>Module</th><th>Horodatage</th><th>Origine</th>
+      <th>Réponse</th></tr></thead>
+    <tbody>
+    {% for source in sources %}
+      <tr>
+        <td>{{ source.name }}{% if source.url %}<br><small class="code">{{ source.url }}</small>{% endif %}</td>
+        <td>{{ source.module }}</td>
+        <td>{{ source.fetched_at|dt }}</td>
+        <td>{{ 'cache' if source.cached else 'appel direct' }}</td>
+        <td class="num">{{ source.status or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p><small>Les réponses d'API sont mises en cache {{ cache_heures }} heures afin de
+    respecter les quotas des fournisseurs. Une source marquée « cache » n'a pas été
+    réinterrogée lors de cette analyse.</small></p>
+  {% else %}
+  <p class="empty">Aucune source externe n'a été interrogée.</p>
+  {% endif %}
+
+  {% if sources_desactivees %}
+  <h3>Sources non interrogées</h3>
+  <table class="data">
+    <thead><tr><th>Source</th><th>Module</th><th>Motif</th></tr></thead>
+    <tbody>
+    {% for item in sources_desactivees %}
+      <tr><td>{{ item.source }}</td><td>{{ item.module }}</td><td>{{ item.raison }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <h3>Méthode et limites</h3>
+  <table class="data">
+    <tbody>
+      <tr><th>Périmètre</th><td>Sources ouvertes et requêtes passives uniquement. Les seuls
+        échanges avec l'infrastructure du domaine sont des résolutions DNS publiques et, pour
+        le module TLS, une requête web standard sur la page d'accueil.</td></tr>
+      <tr><th>Transfert de zone</th><td>Non testé : interroger les serveurs de noms du
+        domaine en AXFR constitue une sollicitation active, hors périmètre. À vérifier en
+        interne.</td></tr>
+      <tr><th>Versions TLS</th><td>Seule la version négociée est relevée. Énumérer les
+        versions et suites acceptées exigerait de nombreuses connexions forcées.</td></tr>
+      <tr><th>Fuites de données</th><td>Métadonnées uniquement : nom, date, volumétrie,
+        catégories de données. Aucun contenu de fuite n'est téléchargé ni consulté.</td></tr>
+      <tr><th>Absence de constat</th><td>L'absence de résultat chez une source signifie
+        l'absence de référencement, et non l'absence de risque.</td></tr>
+      <tr><th>Conservation</th><td>Cache des réponses : {{ cache_heures }} h. Journal
+        d'audit : {{ audit_jours }} jours, purgeable par « python -m app purge ».</td></tr>
+    </tbody>
+  </table>
+
+  <h3>État des clés d'API</h3>
+  <table class="data">
+    <thead><tr><th>Source</th><th>Variable</th><th>Tarif</th><th>Configurée</th></tr></thead>
+    <tbody>
+    {% for key in cles_api %}
+      <tr>
+        <td>{{ key.label }}</td>
+        <td class="code">{{ key.env }}</td>
+        <td>{{ key.pricing }}</td>
+        <td>{{ 'oui' if key.configured else 'non' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <p><small>Rapport produit le {{ generated_at }} par DomainExposure
+    {{ report.app_version }}. Ce document contient des informations sur la surface
+    d'exposition d'une organisation : il doit être traité comme confidentiel et diffusé
+    selon le cadre contractuel applicable.</small></p>
+</section>
+
+</body>
+</html>

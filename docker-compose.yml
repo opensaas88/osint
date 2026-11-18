@@ -1,0 +1,31 @@
+services:
+  domainexposure:
+    build: .
+    image: domainexposure:1.0.0
+    container_name: domainexposure
+    # L'application n'a pas d'authentification : elle n'est publiée que sur la boucle
+    # locale. Pour y accéder depuis un autre poste, passer par un reverse proxy
+    # authentifié plutôt que par 0.0.0.0.
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      DB_PATH: /app/data/domainexposure.db
+    volumes:
+      # Cache des réponses d'API, analyses et journal d'audit : conservés entre les
+      # redémarrages. Un volume nommé est utilisé plutôt qu'un dossier monté, car
+      # le conteneur tourne en utilisateur non privilégié (uid 1000) : un dossier
+      # de l'hôte appartenant à root rendrait la base inaccessible en écriture.
+      #
+      # Pour accéder directement aux fichiers depuis l'hôte, remplacer la ligne
+      # ci-dessous par « - ./data:/app/data » APRÈS avoir préparé le dossier :
+      #     mkdir -p data && sudo chown -R 1000:1000 data
+      - domainexposure-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  domainexposure-data:

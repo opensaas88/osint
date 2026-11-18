@@ -1,0 +1,11 @@
+{
+  "comment": "Sélecteurs DKIM les plus répandus. Un sélecteur est arbitraire : l'absence de réponse ne prouve pas l'absence de DKIM.",
+  "selectors": [
+    "default", "dkim", "mail", "smtp", "selector1", "selector2", "google", "k1", "k2", "k3",
+    "s1", "s2", "sig1", "mandrill", "zoho", "zohomail", "protonmail", "protonmail2",
+    "protonmail3", "amazonses", "ses", "sendgrid", "em", "mailjet", "mj", "sparkpost",
+    "scph", "postmark", "pm", "mailgun", "mg", "brevo", "sendinblue", "ovh", "ovhmail",
+    "gandi", "fm1", "fm2", "fm3", "mxvault", "turbo-smtp", "hs1", "hs2", "everlytickey1",
+    "everlytickey2", "dkim1", "dkim2", "key1", "key2", "20230601", "20240101"
+  ]
+}

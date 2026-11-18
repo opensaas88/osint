@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DomainExposure — évaluation passive de l'exposition cyber</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<style>
+  /* Palette de STATUT réservée (identique en clair et en sombre, par conception).
+     Chaque gravité est toujours accompagnée d'un glyphe et d'un libellé : la
+     couleur ne porte jamais seule l'information. Aucune palette catégorielle
+     n'est employée. */
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --surface-2: #f4f4f2;
+    --rule: #e3e3df;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --critique: #d03b3b;  --critique-track: #f5dfde;
+    --eleve:    #ec835a;  --eleve-track:    #faeae3;
+    --moyen:    #fab219;  --moyen-track:    #fcf1d9;
+    --faible:   #6b6a64;  --faible-track:   #e4e4e0;
+    --info:     #b4b2ab;  --info-track:     #ececea;
+    --good:     #0ca30c;  --good-track:     #d8efd7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --surface-2: #242423;
+      --rule: #3a3a38;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --faible: #a9a79f;  --faible-track: #343431;
+      --info:   #7d7b75;  --info-track:   #2c2c2a;
+      --critique-track: #3a2020; --eleve-track: #3a2a22;
+      --moyen-track: #3a3220;    --good-track: #1d3320;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --surface-2: #242423; --rule: #3a3a38;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7;
+    --faible: #a9a79f; --faible-track: #343431;
+    --info: #7d7b75; --info-track: #2c2c2a;
+    --critique-track: #3a2020; --eleve-track: #3a2a22;
+    --moyen-track: #3a3220; --good-track: #1d3320;
+  }
+  body { background: var(--surface-1); color: var(--text-primary); }
+  .card { background: var(--surface-2); border: 1px solid var(--rule); }
+  .muted { color: var(--text-secondary); }
+  /* Meter : piste en teinte claire de la même couleur, extrémité arrondie à 4 px. */
+  .meter { height: 10px; border-radius: 5px; overflow: hidden; }
+  .meter-fill { height: 100%; border-radius: 0 4px 4px 0; transition: width .4s ease; }
+  /* Barre segmentée : 28 px maximum, écarts de 2 px dans la couleur du support. */
+  .segbar { display: flex; height: 28px; gap: 2px; }
+  .segbar div { border-radius: 4px; line-height: 28px; padding-left: 6px; overflow: hidden;
+                white-space: nowrap; font-size: 12px; font-weight: 600; }
+  .hero { font-size: 56px; font-weight: 600; line-height: .95; letter-spacing: -.02em; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.data th { text-align: left; font-size: 11px; text-transform: uppercase;
+                  letter-spacing: .05em; color: var(--text-secondary);
+                  border-bottom: 1px solid var(--rule); padding: 6px 8px; }
+  table.data td { padding: 6px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tl { list-style: none; margin: 0; padding-left: 18px; border-left: 1px solid var(--rule); }
+  .tl li { position: relative; padding: 0 0 14px 14px; }
+  .tl li::before { content: ""; position: absolute; left: -23px; top: 6px; width: 9px;
+                   height: 9px; border-radius: 50%; background: var(--critique);
+                   box-shadow: 0 0 0 2px var(--surface-1); }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="mx-auto max-w-5xl px-4 py-8">
+
+  <header class="mb-6 flex items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold">DomainExposure</h1>
+      <p class="muted text-sm mt-1">Évaluation de l'exposition cyber d'une organisation à
+        partir de son nom de domaine — OSINT strictement passif.</p>
+    </div>
+    <button id="theme-toggle" class="card rounded-md px-3 py-1.5 text-xs"
+            title="Basculer le thème">Thème</button>
+  </header>
+
+  <!-- ------------------------------------------------------- formulaire -->
+  <section class="card rounded-lg p-5 mb-6">
+    <label for="domain" class="block text-sm font-medium mb-1">Nom de domaine à analyser</label>
+    <div class="flex flex-col gap-2 sm:flex-row">
+      <input id="domain" type="text" autocomplete="off" spellcheck="false"
+             placeholder="exemple.fr"
+             class="flex-1 rounded-md border px-3 py-2 text-sm"
+             style="background: var(--surface-1); border-color: var(--rule); color: inherit">
+      <button id="launch"
+              class="rounded-md px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
+              style="background: #256abf">Analyser</button>
+    </div>
+    <p class="muted text-xs mt-1">Un nom de domaine seul : ni adresse IP, ni URL. Les noms
+      internationalisés (accents, autres alphabets) sont acceptés.</p>
+
+    <div class="mt-4 space-y-2 text-sm">
+      <label class="flex gap-2 items-start">
+        <input type="checkbox" id="c-auth" class="mt-1">
+        <span><strong>Obligatoire.</strong> Je dispose d'une autorisation du propriétaire de ce
+          domaine ou j'agis dans un cadre contractuel.</span>
+      </label>
+      <label class="flex gap-2 items-start">
+        <input type="checkbox" id="c-passive" class="mt-1">
+        <span><strong>Obligatoire.</strong> Je comprends que cette analyse se limite à de la
+          collecte passive de sources ouvertes, sans aucune sollicitation intrusive des
+          systèmes de la cible.</span>
+      </label>
+      <label class="flex gap-2 items-start">
+        <input type="checkbox" id="c-verified" class="mt-1">
+        <span>Facultatif. La propriété de ce domaine est vérifiée auprès de Have I Been Pwned
+          (débloque la recherche des comptes exposés, affichés masqués).</span>
+      </label>
+    </div>
+    <p class="muted text-xs mt-3">La date, l'opérateur, le domaine et les cases cochées sont
+      journalisés dans le journal d'audit à chaque lancement, y compris en cas de refus.</p>
+    <div id="form-error" class="hidden mt-3 rounded-md px-3 py-2 text-sm text-white"
+         style="background: var(--critique)"></div>
+  </section>
+
+  <!-- -------------------------------------------------------- progression -->
+  <section id="progress" class="card rounded-lg p-5 mb-6 hidden">
+    <div class="flex items-baseline justify-between mb-3">
+      <h2 class="text-lg font-semibold">Analyse en cours</h2>
+      <span id="progress-meta" class="muted text-xs"></span>
+    </div>
+    <div id="progress-list" class="grid gap-2 sm:grid-cols-3 text-sm"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------- résultats -->
+  <section id="results" class="hidden"></section>
+
+  <!-- ---------------------------------------------------------- historique -->
+  <section id="history" class="card rounded-lg p-5 mt-6 hidden">
+    <h2 class="text-lg font-semibold mb-1">Historique</h2>
+    <p class="muted text-xs mb-3">Sélectionnez deux analyses du même domaine pour comparer leur
+      évolution.</p>
+    <div id="history-list"></div>
+    <div class="mt-3 flex gap-2">
+      <button id="compare" class="card rounded-md px-3 py-1.5 text-xs" disabled>
+        Comparer les deux analyses sélectionnées</button>
+    </div>
+    <div id="comparison" class="mt-4"></div>
+  </section>
+
+  <footer class="muted text-xs mt-10 border-t pt-4" style="border-color: var(--rule)">
+    DomainExposure — outil d'audit passif. Son usage sans autorisation du propriétaire du
+    domaine peut constituer une infraction (article 323-1 du Code pénal). Les métadonnées de
+    fuites affichées ne contiennent ni mot de passe, ni empreinte, ni donnée personnelle en
+    clair.
+  </footer>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,248 @@
+/* Rapport DomainExposure — feuille de style autonome, pensée pour l'écran et l'impression.
+   Palette : palette de STATUT réservée (good/warning/serious/critical) pour la gravité et
+   les scores, plus des gris d'encre. Aucune palette catégorielle n'est utilisée, donc rien
+   à soumettre au validateur de séparation CVD : chaque couleur de statut est toujours
+   accompagnée d'un glyphe et d'un libellé, jamais porteuse de sens à elle seule. */
+
+:root {
+  --surface-1: #fcfcfb;
+  --surface-2: #f4f4f2;
+  --rule: #e3e3df;
+  --rule-strong: #c9c9c3;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #8a8880;
+
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --good-track: #d8efd7;
+  --warning-track: #fcf1d9;
+  --serious-track: #faeae3;
+  --critical-track: #f5dfde;
+  --muted-track: #e8e8e4;
+}
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 16mm 16mm;
+  @bottom-center {
+    content: "DomainExposure — rapport d'exposition — page " counter(page) " / " counter(pages);
+    font: 8pt "DejaVu Sans", "Helvetica Neue", Arial, sans-serif;
+    color: #8a8880;
+  }
+}
+@page :first { margin: 0; }
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-family: "DejaVu Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 10pt;
+  line-height: 1.5;
+}
+
+.page-break { page-break-before: always; }
+
+/* Confort de lecture du fichier HTML autonome dans un navigateur.
+   L'impression et le PDF conservent la mise en page définie par @page. */
+@media screen {
+  body { max-width: 210mm; margin: 0 auto; box-shadow: 0 0 0 1px var(--rule); }
+  section:not(.cover) { padding: 10mm 16mm 6mm; }
+  .cover { min-height: 0; padding-bottom: 24mm; }
+}
+h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; margin: 0; }
+h2 {
+  font-size: 15pt;
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+h3 { font-size: 12pt; margin: 18px 0 6px; }
+h4 { font-size: 10.5pt; margin: 0 0 4px; }
+p { margin: 0 0 8px; }
+a { color: #256abf; text-decoration: none; word-break: break-all; }
+small { font-size: 8.5pt; color: var(--text-secondary); }
+
+/* ------------------------------------------------------------ couverture -- */
+.cover {
+  padding: 26mm 18mm 16mm;
+  page-break-after: always;
+  background: var(--surface-2);
+  min-height: 297mm;
+}
+.cover-kicker {
+  font-size: 9pt;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.cover h1 { font-size: 27pt; margin: 6px 0 2px; }
+.cover-domain {
+  font-size: 15pt;
+  color: var(--text-secondary);
+  margin-bottom: 22mm;
+  word-break: break-all;
+}
+.cover-meta { margin-top: 20mm; font-size: 9.5pt; color: var(--text-secondary); }
+.cover-meta dt { font-weight: 600; color: var(--text-primary); float: left; width: 46mm; clear: left; }
+.cover-meta dd { margin: 0 0 5px 46mm; }
+
+.notice {
+  margin-top: 16mm;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  border-left: 3px solid var(--rule-strong);
+  font-size: 8.5pt;
+  color: var(--text-secondary);
+}
+
+/* ------------------------------------------- score : hero figure + meter -- */
+.score-block { display: flex; align-items: flex-end; gap: 16px; }
+.score-hero {
+  /* Hero figure : un seul par rapport, chiffres proportionnels (jamais tabular-nums). */
+  font-size: 56pt;
+  font-weight: 600;
+  line-height: .9;
+  letter-spacing: -.02em;
+}
+.score-hero-unit { font-size: 16pt; font-weight: 400; color: var(--text-secondary); }
+.score-grade {
+  font-size: 22pt;
+  font-weight: 600;
+  padding: 2px 14px;
+  border-radius: 6px;
+  color: #fff;
+}
+.score-caption { font-size: 9pt; color: var(--text-secondary); margin-top: 6px; }
+
+/* Meter : piste = teinte claire de la même couleur, remplissage = couleur d'état.
+   Extrémité de donnée arrondie à 4 px, ancrée à l'origine. */
+.meter { height: 12px; border-radius: 6px; overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 0 4px 4px 0; }
+.meter-wide { width: 100%; margin-top: 10px; }
+
+/* Meter list : un nom, une barre, un chiffre par ligne, barres alignées. */
+.meter-list { width: 100%; border-collapse: collapse; }
+.meter-list td { padding: 5px 0; vertical-align: middle; border-bottom: 1px solid var(--rule); }
+.meter-list .ml-name { width: 46mm; font-size: 9.5pt; }
+.meter-list .ml-bar { padding-left: 6px; padding-right: 10px; }
+.meter-list .ml-bar .meter { height: 10px; }
+.meter-list .ml-score {
+  width: 20mm;
+  text-align: right;
+  font-variant-numeric: tabular-nums; /* colonne de chiffres : alignement vertical */
+  font-weight: 600;
+}
+.meter-list .ml-weight { width: 16mm; text-align: right; font-size: 8.5pt; color: var(--text-muted); }
+.ml-off { font-size: 8.5pt; color: var(--text-muted); font-style: italic; }
+
+/* ------------------------------------------------- barre segmentée (28px) -- */
+.segbar { display: flex; height: 28px; gap: 2px; /* écart de 2 px dans la couleur du support */ }
+.segbar-part {
+  border-radius: 4px;
+  color: #fff;
+  font-size: 8.5pt;
+  font-weight: 600;
+  line-height: 28px;
+  padding-left: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.segbar-part.on-light { color: #0b0b0b; }
+.segbar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 8px;
+  font-size: 9pt;
+  color: var(--text-secondary);
+}
+.segbar-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* ------------------------------------------------------------- findings --- */
+.finding {
+  border: 1px solid var(--rule);
+  border-left-width: 4px;
+  border-radius: 4px;
+  padding: 9px 11px;
+  margin-bottom: 9px;
+  page-break-inside: avoid;
+}
+.finding-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.badge {
+  font-size: 8pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.finding dl { margin: 7px 0 0; font-size: 9.5pt; }
+.finding dt {
+  font-weight: 600;
+  font-size: 8.5pt;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.finding dd { margin: 1px 0 0; }
+.refs { margin-top: 7px; font-size: 8.5pt; color: var(--text-secondary); }
+.refs strong { color: var(--text-primary); }
+.code { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 8.5pt; color: var(--text-muted); }
+
+/* ----------------------------------------------------------- tableaux ----- */
+table.data { width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 10px; }
+table.data th, table.data td {
+  text-align: left;
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--rule); /* filets fins, discrets */
+  vertical-align: top;
+}
+table.data th {
+  font-size: 8.5pt;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--rule-strong);
+}
+table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data tr { page-break-inside: avoid; }
+
+/* ------------------------------------------------------------ timeline --- */
+.timeline { list-style: none; margin: 0; padding: 0 0 0 16px; border-left: 1px solid var(--rule-strong); }
+.timeline li { position: relative; padding: 0 0 12px 12px; page-break-inside: avoid; }
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: -21px;
+  top: 5px;
+  width: 9px;   /* marqueur >= 8 px */
+  height: 9px;
+  border-radius: 50%;
+  background: var(--critical);
+  box-shadow: 0 0 0 2px var(--surface-1); /* anneau de 2 px dans la couleur du support */
+}
+.timeline .tl-date { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------- modules --- */
+.module { page-break-inside: auto; margin-bottom: 20px; }
+.module-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.module-status { font-size: 8.5pt; color: var(--text-secondary); }
+.pill {
+  display: inline-block;
+  font-size: 8pt;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  color: var(--text-secondary);
+}
+.empty { font-size: 9.5pt; color: var(--text-muted); font-style: italic; }
+.errors { font-size: 8.5pt; color: var(--text-secondary); margin-top: 5px; }
+.errors li { margin-bottom: 2px; }
