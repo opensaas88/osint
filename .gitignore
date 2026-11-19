@@ -2,7 +2,10 @@
 __pycache__/
 *.pyc
 .env
+# Un rapport décrit la surface d'attaque d'une organisation : il se traite comme
+# un document confidentiel et n'a rien à faire dans un dépôt, public ou non.
 /data/
 /reports/
+/rapports/
 .pytest_cache/
 .ruff_cache/
