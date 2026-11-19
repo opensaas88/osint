@@ -33,6 +33,12 @@ API_KEYS: tuple[ApiKeySpec, ...] = (
                "https://www.abuseipdb.com/account/api", "gratuite"),
     ApiKeySpec("urlhaus_auth_key", "URLHAUS_AUTH_KEY", "URLhaus (abuse.ch)",
                "https://auth.abuse.ch", "gratuite (obligatoire)"),
+    ApiKeySpec("github_search_token", "GITHUB_SEARCH_TOKEN",
+               "GitHub (recherche de code public)",
+               "https://github.com/settings/tokens", "gratuite"),
+    ApiKeySpec("safebrowsing_api_key", "SAFEBROWSING_API_KEY", "Google Safe Browsing",
+               "https://console.cloud.google.com/apis/library/safebrowsing.googleapis.com",
+               "gratuite"),
     ApiKeySpec("leakcheck_api_key", "LEAKCHECK_API_KEY", "LeakCheck",
                "https://leakcheck.io", "payante"),
     ApiKeySpec("intelx_api_key", "INTELX_API_KEY", "Intelligence X",
@@ -67,6 +73,9 @@ class Settings(BaseSettings):
     dns_concurrency: int = 12
 
     # --- HTTP ---
+    # Délai minimal entre deux appels à une même source. À ne désactiver que
+    # face à des réponses simulées : il protège les quotas des fournisseurs.
+    rate_limits_enabled: bool = True
     http_timeout: float = 15.0
     http_retries: int = 3
     crtsh_timeout: float = 60.0
@@ -106,6 +115,8 @@ class Settings(BaseSettings):
     virustotal_api_key: str | None = None
     abuseipdb_api_key: str | None = None
     urlhaus_auth_key: str | None = None
+    github_search_token: str | None = None
+    safebrowsing_api_key: str | None = None
     leakcheck_api_key: str | None = None
     intelx_api_key: str | None = None
 

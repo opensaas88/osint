@@ -33,6 +33,9 @@ SOURCE_RATE_LIMITS: dict[str, float] = {
     "leakcheck": 1.0,
     "intelx": 1.0,
     "rdap": 0.5,
+    # Recherche de code GitHub : 10 requêtes par minute pour un jeton standard.
+    "github": 6.5,
+    "safebrowsing": 0.5,
     "webhook": 0.0,
     "doh": 0.0,
     "cible": 0.0,
@@ -122,7 +125,9 @@ class HttpClient:
             await self.client.aclose()
 
     async def _throttle(self, source: str) -> None:
-        """Respecte le delai minimal entre deux appels a la meme source."""
+        """Respecte le délai minimal entre deux appels à la même source."""
+        if not getattr(self.settings, "rate_limits_enabled", True):
+            return
         interval = SOURCE_RATE_LIMITS.get(source, 0.5)
         if interval <= 0:
             return

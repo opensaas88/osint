@@ -1,14 +1,20 @@
 """Module 9 — réputation du domaine et de ses adresses IP.
 
-Trois sources, toutes optionnelles et activées par clé : VirusTotal, URLhaus
-(abuse.ch) et AbuseIPDB. Sans aucune clé, le module se désactive proprement et
-l'indique dans le rapport.
+Quatre sources, toutes optionnelles et activées par clé : VirusTotal, URLhaus
+(abuse.ch), AbuseIPDB et Google Safe Browsing. Sans aucune clé, le module se
+désactive proprement et l'indique dans le rapport.
+
+Google Safe Browsing mérite une mention particulière : c'est la liste que
+consultent Chrome, Firefox et Safari. Un domaine qui y figure déclenche un
+avertissement rouge en pleine page chez l'écrasante majorité des visiteurs —
+le constat le plus facile à vérifier soi-même pour un client sceptique.
 """
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 from typing import Any
 
 from .. import refs
@@ -24,6 +30,23 @@ TIMEOUT = 120.0
 VIRUSTOTAL_URL = "https://www.virustotal.com/api/v3/domains/{domain}"
 URLHAUS_URL = "https://urlhaus-api.abuse.ch/v1/host/"
 ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
+SAFEBROWSING_URL = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
+
+#: Catégories de menaces interrogées auprès de Safe Browsing.
+TYPES_DE_MENACE = (
+    "MALWARE",
+    "SOCIAL_ENGINEERING",
+    "UNWANTED_SOFTWARE",
+    "POTENTIALLY_HARMFUL_APPLICATION",
+)
+
+#: Libellés français des catégories renvoyées par l'API.
+MENACES_LISIBLES = {
+    "MALWARE": "distribution de logiciel malveillant",
+    "SOCIAL_ENGINEERING": "hameçonnage ou ingénierie sociale",
+    "UNWANTED_SOFTWARE": "logiciel indésirable",
+    "POTENTIALLY_HARMFUL_APPLICATION": "application potentiellement dangereuse",
+}
 
 MAX_IPS = 5
 
@@ -73,6 +96,56 @@ async def _urlhaus(ctx: ModuleContext, run_: ModuleRun) -> dict[str, Any] | None
     }
 
 
+async def _safebrowsing(ctx: ModuleContext, run_: ModuleRun) -> dict[str, Any] | None:
+    """Google Safe Browsing : la liste consultée par les navigateurs eux-mêmes.
+
+    La clé voyage en paramètre d'URL, comme l'impose l'API : elle ne peut donc pas
+    être injectée par un proxy d'entreprise et doit figurer dans le fichier .env.
+    """
+    key = ctx.settings.key("safebrowsing_api_key")
+    if not key:
+        return None
+    corps = {
+        "client": {"clientId": "domainexposure", "clientVersion": "1.0.0"},
+        "threatInfo": {
+            "threatTypes": list(TYPES_DE_MENACE),
+            "platformTypes": ["ANY_PLATFORM"],
+            "threatEntryTypes": ["URL"],
+            "threatEntries": [
+                {"url": f"http://{ctx.name}/"},
+                {"url": f"https://{ctx.name}/"},
+                {"url": f"https://www.{ctx.name}/"},
+            ],
+        },
+    }
+    result = await ctx.http.request(
+        "safebrowsing",
+        SAFEBROWSING_URL,
+        method="POST",
+        params={"key": key},
+        headers={"content-type": "application/json"},
+        content=json.dumps(corps).encode("utf-8"),
+        use_cache=False,
+    )
+    run_.source(result.source_ref(label="Google Safe Browsing", url=SAFEBROWSING_URL))
+    if not result.ok or not isinstance(result.payload, dict):
+        run_.error(f"Google Safe Browsing : {result.describe_error()}")
+        return None
+
+    # Une réponse vide signifie « rien à signaler » : c'est la réponse attendue.
+    correspondances = result.payload.get("matches") or []
+    menaces: dict[str, list[str]] = {}
+    for correspondance in correspondances:
+        if not isinstance(correspondance, dict):
+            continue
+        type_menace = str(correspondance.get("threatType") or "INCONNU")
+        url = str((correspondance.get("threat") or {}).get("url") or "")
+        menaces.setdefault(type_menace, [])
+        if url and url not in menaces[type_menace]:
+            menaces[type_menace].append(url)
+    return {"signale": bool(menaces), "menaces": menaces}
+
+
 async def _abuseipdb(ctx: ModuleContext, run_: ModuleRun) -> list[dict[str, Any]] | None:
     key = ctx.settings.key("abuseipdb_api_key")
     if not key:
@@ -117,6 +190,7 @@ async def run(ctx: ModuleContext) -> ModuleResult:
         "VirusTotal": ctx.settings.has_key("virustotal_api_key"),
         "URLhaus (abuse.ch)": ctx.settings.has_key("urlhaus_auth_key"),
         "AbuseIPDB": ctx.settings.has_key("abuseipdb_api_key"),
+        "Google Safe Browsing": ctx.settings.has_key("safebrowsing_api_key"),
     }
     manquantes = [nom for nom, presente in cles.items() if not presente]
     run_.data["sources_desactivees"] = [
@@ -126,11 +200,12 @@ async def run(ctx: ModuleContext) -> ModuleResult:
     if not any(cles.values()):
         return run_.skipped(
             "aucune clé de réputation configurée (VIRUSTOTAL_API_KEY, URLHAUS_AUTH_KEY, "
-            "ABUSEIPDB_API_KEY)"
+            "ABUSEIPDB_API_KEY, SAFEBROWSING_API_KEY)"
         )
 
-    virustotal, urlhaus, abuseipdb = await asyncio.gather(
-        _virustotal(ctx, run_), _urlhaus(ctx, run_), _abuseipdb(ctx, run_)
+    virustotal, urlhaus, abuseipdb, safebrowsing = await asyncio.gather(
+        _virustotal(ctx, run_), _urlhaus(ctx, run_), _abuseipdb(ctx, run_),
+        _safebrowsing(ctx, run_),
     )
 
     # ------------------------------------------------------------ VirusTotal --
@@ -239,6 +314,39 @@ async def run(ctx: ModuleContext) -> ModuleResult:
                 + ", ".join(f"{e['ip']} (score {e['score']}/100)" for e in abuseipdb),
                 "Aucune activité malveillante n'est signalée depuis les adresses IP qui hébergent "
                 "vos services.",
+                "Aucune action nécessaire.",
+                [refs.CIS_CONTROLS],
+            )
+
+    # ------------------------------------------------------ Safe Browsing --
+    if safebrowsing is not None:
+        run_.data["safebrowsing"] = safebrowsing
+        if safebrowsing["signale"]:
+            categories = ", ".join(
+                MENACES_LISIBLES.get(type_menace, type_menace)
+                for type_menace in safebrowsing["menaces"]
+            )
+            run_.add(
+                "REPUTATION_SAFEBROWSING_FLAGGED", Severity.ELEVE,
+                "Le domaine figure sur la liste Google Safe Browsing",
+                f"Catégories signalées : {categories}. "
+                f"{sum(len(u) for u in safebrowsing['menaces'].values())} URL concernée(s).",
+                "C'est la liste que consultent Chrome, Firefox et Safari. Vos visiteurs voient "
+                "un avertissement rouge en pleine page avant d'atteindre votre site, et la "
+                "plupart renoncent. Gmail et les filtres antispam s'appuient aussi sur cette "
+                "liste : vos emails en pâtissent. N'importe qui peut le vérifier en ouvrant "
+                "votre adresse dans un navigateur.",
+                "Identifier et supprimer le contenu à l'origine du signalement, puis demander "
+                "un réexamen via la Google Search Console, propriété vérifiée à l'appui.",
+                [refs.ANSSI_SITE_WEB, refs.CIS_CONTROLS],
+                {"menaces": safebrowsing["menaces"]},
+            )
+        else:
+            run_.add(
+                "REPUTATION_SAFEBROWSING_CLEAN", Severity.INFO,
+                "Le domaine n'est pas signalé par Google Safe Browsing",
+                "Aucune correspondance pour les variantes http, https et www du domaine.",
+                "Les navigateurs n'affichent aucun avertissement avant d'ouvrir votre site.",
                 "Aucune action nécessaire.",
                 [refs.CIS_CONTROLS],
             )

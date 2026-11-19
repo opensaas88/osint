@@ -59,6 +59,9 @@ def settings(tmp_path: Path) -> Settings:
         # L'ordonnanceur est piloté explicitement par les tests qui le concernent :
         # aucune tâche de fond ne doit s'exécuter à l'improviste.
         scheduler_enabled=False,
+        # Les réponses étant simulées, la temporisation entre appels n'a pas
+        # d'objet et ralentirait la suite de plus d'une minute.
+        rate_limits_enabled=False,
     )
 
 

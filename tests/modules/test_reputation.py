@@ -22,7 +22,8 @@ async def test_module_desactive_sans_aucune_cle(settings, http, make_context):
     assert resultat.status is ModuleStatus.SKIPPED
     assert resultat.score is None
     assert "VIRUSTOTAL_API_KEY" in resultat.disabled_reason
-    assert len(resultat.data["sources_desactivees"]) == 3
+    assert "SAFEBROWSING_API_KEY" in resultat.disabled_reason
+    assert len(resultat.data["sources_desactivees"]) == 4
 
 
 @respx.mock
@@ -86,3 +87,75 @@ async def test_cle_refusee_degrade_sans_interrompre(settings, http, make_context
     resultat = await reputation.run(ctx)
     assert resultat.status is ModuleStatus.PARTIAL
     assert any("authentification refusée" in e for e in resultat.errors)
+
+
+# ---------------------------------------------------------------------------
+# Google Safe Browsing
+# ---------------------------------------------------------------------------
+
+SAFEBROWSING = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
+
+
+@respx.mock
+async def test_domaine_signale_par_safe_browsing(settings, http, make_context):
+    settings.safebrowsing_api_key = "cle"
+    respx.post(SAFEBROWSING).mock(return_value=httpx.Response(200, json={"matches": [
+        {"threatType": "SOCIAL_ENGINEERING", "platformType": "ANY_PLATFORM",
+         "threat": {"url": "https://exemple.fr/connexion"}},
+        {"threatType": "MALWARE", "platformType": "ANY_PLATFORM",
+         "threat": {"url": "https://exemple.fr/telechargement"}},
+    ]}))
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await reputation.run(ctx)
+
+    finding = next(f for f in resultat.findings if f.code == "REPUTATION_SAFEBROWSING_FLAGGED")
+    assert finding.severity.value == "eleve"
+    assert "hameçonnage" in finding.constat
+    assert "distribution de logiciel malveillant" in finding.constat
+    # L'argument décisif : le client peut le vérifier lui-même en trois secondes.
+    assert "Chrome" in finding.explication
+
+
+@respx.mock
+async def test_reponse_vide_signifie_domaine_sain(settings, http, make_context):
+    """L'API renvoie un objet vide quand il n'y a rien à signaler."""
+    settings.safebrowsing_api_key = "cle"
+    respx.post(SAFEBROWSING).mock(return_value=httpx.Response(200, json={}))
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await reputation.run(ctx)
+    assert "REPUTATION_SAFEBROWSING_CLEAN" in codes(resultat)
+    assert resultat.score == 100
+
+
+@respx.mock
+async def test_les_trois_variantes_durl_sont_soumises(settings, http, make_context):
+    settings.safebrowsing_api_key = "cle"
+    route = respx.post(SAFEBROWSING).mock(return_value=httpx.Response(200, json={}))
+    ctx = await make_context(settings, http, FakeResolver())
+    await reputation.run(ctx)
+
+    assert route.call_count == 1
+    import json as _json
+    corps = _json.loads(respx.calls.last.request.content.decode())
+    urls = [e["url"] for e in corps["threatInfo"]["threatEntries"]]
+    assert urls == ["http://exemple.fr/", "https://exemple.fr/", "https://www.exemple.fr/"]
+    assert "MALWARE" in corps["threatInfo"]["threatTypes"]
+
+
+@respx.mock
+async def test_cle_safe_browsing_invalide(settings, http, make_context):
+    settings.safebrowsing_api_key = "mauvaise"
+    respx.post(SAFEBROWSING).mock(
+        return_value=httpx.Response(400, json={"error": {"message": "API key not valid"}}))
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await reputation.run(ctx)
+    assert any("Safe Browsing" in e for e in resultat.errors)
+    assert not any(c.startswith("REPUTATION_SAFEBROWSING") for c in codes(resultat))
+
+
+async def test_safe_browsing_absent_des_cles_desactivees_si_configure(settings, http, make_context):
+    settings.safebrowsing_api_key = "cle"
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await reputation.run(ctx)
+    sources = {item["source"] for item in resultat.data["sources_desactivees"]}
+    assert "Google Safe Browsing" not in sources

@@ -270,3 +270,127 @@ async def test_infostealers_bloques_sans_attestation_de_propriete(settings, http
     assert route_mail.call_count == 0 and route_site.call_count == 0
     sources = {item["source"] for item in resultat.data["sources_desactivees"]}
     assert "HIBP — journaux d'infostealers" in sources
+
+
+# ---------------------------------------------------------------------------
+# Recherche de code public (GitHub)
+# ---------------------------------------------------------------------------
+
+GITHUB = "https://api.github.com/search/code"
+
+
+def resultat_github(total: int, chemins: list[str] | None = None) -> dict:
+    return {
+        "total_count": total,
+        "incomplete_results": False,
+        "items": [
+            {
+                "name": chemin.split("/")[-1],
+                "path": chemin,
+                "html_url": f"https://github.com/acme/depot/blob/main/{chemin}",
+                "repository": {"full_name": "acme/depot"},
+                # Champ volontairement présent : il ne doit jamais ressortir.
+                "text_matches": [{"fragment": "api_key = 'sk-secret-reel'"}],
+            }
+            for chemin in (chemins or [])
+        ],
+    }
+
+
+def _avec_jeton(settings):
+    settings.github_search_token = "jeton-de-test"
+    return settings
+
+
+@respx.mock
+async def test_piste_de_secret_dans_du_code_public(settings, http, make_context):
+    _avec_jeton(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    route = respx.get(GITHUB)
+    route.side_effect = [
+        httpx.Response(200, json=resultat_github(12, ["README.md"])),            # mentions
+        httpx.Response(200, json=resultat_github(2, ["config/prod.yml"])),       # password
+        httpx.Response(200, json=resultat_github(0)),                            # api_key
+    ]
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await breaches.run(ctx)
+
+    assert "BREACH_PUBLIC_CODE_SECRET" in codes(resultat)
+    finding = next(f for f in resultat.findings if f.code == "BREACH_PUBLIC_CODE_SECRET")
+    assert finding.severity.value == "eleve"
+    assert "piste à vérifier, pas une preuve" in finding.explication
+    # La révocation prime sur la suppression : l'historique Git conserve le secret.
+    assert "l'historique Git le conserve" in finding.recommandation
+
+
+@respx.mock
+async def test_le_contenu_des_fichiers_nest_jamais_conserve(settings, http, make_context):
+    """Signaler une fuite d'identifiant ne doit pas conduire l'outil à le détenir."""
+    _avec_jeton(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    route = respx.get(GITHUB)
+    route.side_effect = [
+        httpx.Response(200, json=resultat_github(1, ["a.yml"])),
+        httpx.Response(200, json=resultat_github(1, ["config/prod.yml"])),
+        httpx.Response(200, json=resultat_github(0)),
+    ]
+    ctx = await make_context(settings, http, FakeResolver())
+    contenu = (await breaches.run(ctx)).model_dump_json()
+
+    assert "sk-secret-reel" not in contenu
+    assert "text_matches" not in contenu
+    assert "fragment" not in contenu
+    # L'emplacement, lui, est conservé : c'est ce qui permet d'aller vérifier.
+    assert "config/prod.yml" in contenu
+
+
+@respx.mock
+async def test_un_domaine_trop_repandu_ne_declenche_pas_dalerte(settings, http, make_context):
+    """Mesuré en réel : « example.com password » renvoie plus de onze millions de fichiers."""
+    _avec_jeton(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    route = respx.get(GITHUB)
+    route.side_effect = [
+        httpx.Response(200, json=resultat_github(9_000_000)),
+        httpx.Response(200, json=resultat_github(11_223_040, ["docs/api.md"])),
+        httpx.Response(200, json=resultat_github(500_000, ["readme.md"])),
+    ]
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await breaches.run(ctx)
+
+    assert "BREACH_PUBLIC_CODE_TOO_COMMON" in codes(resultat)
+    assert "BREACH_PUBLIC_CODE_SECRET" not in codes(resultat)
+    assert resultat.score == 100  # un constat informatif ne pénalise pas
+
+
+@respx.mock
+async def test_aucune_mention_dans_le_code_public(settings, http, make_context):
+    _avec_jeton(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(GITHUB).mock(return_value=httpx.Response(200, json=resultat_github(0)))
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await breaches.run(ctx)
+    assert not any(c.startswith("BREACH_PUBLIC_CODE") for c in codes(resultat))
+
+
+@respx.mock
+async def test_quota_github_epuise_est_signale_clairement(settings, http, make_context):
+    _avec_jeton(settings)
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(GITHUB).mock(return_value=httpx.Response(403, json={"message": "rate limited"}))
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await breaches.run(ctx)
+    assert any("10 requêtes par minute" in e for e in resultat.errors)
+
+
+@respx.mock
+async def test_recherche_de_code_desactivee_sans_jeton(settings, http, make_context):
+    """Sans jeton, aucune requête n'est émise vers GitHub."""
+    respx.get(HIBP_BREACHES).mock(return_value=httpx.Response(200, json=[]))
+    route = respx.get(GITHUB).mock(return_value=httpx.Response(200, json=resultat_github(0)))
+    ctx = await make_context(settings, http, FakeResolver())
+    resultat = await breaches.run(ctx)
+
+    assert route.call_count == 0
+    sources = {item["source"] for item in resultat.data["sources_desactivees"]}
+    assert "GitHub (recherche de code public)" in sources

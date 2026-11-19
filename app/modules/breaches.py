@@ -12,6 +12,9 @@ Sources :
     saisi leurs identifiants sur votre site (vos utilisateurs). Mêmes conditions :
     clé de palier « Pro » et domaine vérifié dans le tableau de bord HIBP.
   * LeakCheck et Intelligence X, optionnels, en mode métadonnées uniquement.
+  * Recherche de code public sur GitHub : fichiers mentionnant le domaine aux
+    côtés de mots-clés d'identifiants. Le contenu des fichiers n'est **jamais**
+    récupéré — l'outil signale une piste, il ne détient pas le secret.
 
 Règle absolue : aucun mot de passe, aucune empreinte, aucune donnée personnelle en
 clair n'est récupéré, stocké ni affiché. Seules les métadonnées de fuite sont
@@ -33,7 +36,7 @@ KEY = "breaches"
 LABEL = MODULE_LABELS[KEY]
 WEIGHT = 15
 DEPENDS_ON: tuple[str, ...] = ()
-TIMEOUT = 90.0
+TIMEOUT = 150.0
 
 HIBP_BREACHES_URL = "https://haveibeenpwned.com/api/v3/breaches"
 HIBP_DOMAIN_SEARCH_URL = "https://haveibeenpwned.com/api/v3/breacheddomain/{domain}"
@@ -45,6 +48,18 @@ HIBP_STEALER_WEBSITE_DOMAIN_URL = (
 )
 LEAKCHECK_URL = "https://leakcheck.io/api/v2/query/{query}"
 INTELX_SEARCH_URL = "https://2.intelx.io/phonebook/search"
+GITHUB_SEARCH_URL = "https://api.github.com/search/code"
+
+#: Mots-clés recherchés aux côtés du domaine. Volontairement peu nombreux : chaque
+#: requête consomme un quota serré (10 par minute pour un jeton standard).
+MOTS_CLES_IDENTIFIANTS = ("password", "api_key")
+
+#: Au-delà de ce nombre de résultats, le signal n'est plus exploitable : le domaine
+#: est trop répandu dans le code public. Mesuré en conditions réelles — la requête
+#: « "example.com" password » renvoie plus de onze millions de fichiers, pour la
+#: simple raison que ce domaine sert d'exemple dans la documentation du monde
+#: entier. Annoncer un tel volume comme une fuite d'identifiants serait absurde.
+SEUIL_BRUIT_CODE_PUBLIC = 200
 
 #: Champs conservés d'une fuite HIBP (whitelist stricte).
 BREACH_FIELDS = (
@@ -314,6 +329,56 @@ async def _intelx(ctx: ModuleContext, run_: ModuleRun) -> dict[str, Any] | None:
     return {"selecteurs": len(selectors)}
 
 
+async def _github_code_search(
+    ctx: ModuleContext, run_: ModuleRun, requete: str
+) -> dict[str, Any] | None:
+    """Exécute une recherche de code publique et ne garde que les emplacements.
+
+    Le contenu des fichiers n'est jamais demandé : l'en-tête `text-match`, qui
+    renverrait les extraits contenant l'identifiant, n'est pas utilisé. Signaler
+    une piste ne doit pas conduire l'outil à détenir lui-même le secret.
+    """
+    jeton = ctx.settings.key("github_search_token")
+    if not jeton:
+        return None
+    result = await ctx.http.request(
+        "github",
+        GITHUB_SEARCH_URL,
+        params={"q": requete, "per_page": 20},
+        headers={
+            "authorization": f"Bearer {jeton}",
+            "accept": "application/vnd.github+json",
+            "x-github-api-version": "2022-11-28",
+        },
+    )
+    run_.source(result.source_ref(label=f"GitHub — recherche de code « {requete} »",
+                                  url=GITHUB_SEARCH_URL))
+    if result.status == 403:
+        run_.error(
+            "GitHub : quota de recherche atteint (10 requêtes par minute) ou jeton "
+            "dépourvu du droit de recherche de code"
+        )
+        return None
+    if not result.ok or not isinstance(result.payload, dict):
+        run_.error(f"GitHub (recherche de code) : {result.describe_error()}")
+        return None
+
+    emplacements = [
+        {
+            "depot": (item.get("repository") or {}).get("full_name"),
+            "chemin": item.get("path"),
+            "lien": item.get("html_url"),
+        }
+        for item in (result.payload.get("items") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "requete": requete,
+        "total": int(result.payload.get("total_count") or 0),
+        "emplacements": emplacements[:20],
+    }
+
+
 async def run(ctx: ModuleContext) -> ModuleResult:
     """Recense les fuites connues concernant le domaine, en métadonnées uniquement."""
     run_ = ModuleRun(KEY)
@@ -565,6 +630,90 @@ async def run(ctx: ModuleContext) -> ModuleResult:
                 "Si une investigation approfondie est nécessaire, la mener dans un cadre "
                 "contractuel explicite, avec un périmètre et une conservation documentés.",
                 [refs.OWASP_CREDENTIAL_STUFFING],
+            )
+
+    # ------------------------------------------- code source public --------
+    if not ctx.settings.has_key("github_search_token"):
+        desactivees.append(
+            {
+                "source": "GitHub (recherche de code public)",
+                "raison": "jeton GITHUB_SEARCH_TOKEN absent — un jeton gratuit suffit, la recherche "
+                          "de code exige seulement d'être authentifié",
+            }
+        )
+    else:
+        mentions = await _github_code_search(ctx, run_, f'"{ctx.name}"')
+        trouvailles: list[dict[str, Any]] = []
+        for mot_cle in MOTS_CLES_IDENTIFIANTS:
+            trouve = await _github_code_search(ctx, run_, f'"{ctx.name}" {mot_cle}')
+            if trouve and trouve["total"]:
+                trouvailles.append({**trouve, "mot_cle": mot_cle})
+
+        # Un domaine omniprésent dans le code public rend le signal inexploitable.
+        suspects = [t for t in trouvailles if t["total"] <= SEUIL_BRUIT_CODE_PUBLIC]
+        trop_repandu = [t for t in trouvailles if t["total"] > SEUIL_BRUIT_CODE_PUBLIC]
+        run_.data["code_public"] = {
+            "mentions": mentions,
+            "pistes": suspects,
+            "trop_repandu": [
+                {k: v for k, v in t.items() if k != "emplacements"} for t in trop_repandu
+            ],
+        }
+
+        if trop_repandu and not suspects:
+            maximum = max(t["total"] for t in trop_repandu)
+            run_.add(
+                "BREACH_PUBLIC_CODE_TOO_COMMON", Severity.INFO,
+                "Le domaine est trop répandu dans le code public pour que ce signal soit "
+                "exploitable",
+                f"La recherche renvoie jusqu'à {maximum:,} fichiers".replace(",", "\u202f")
+                + f", bien au-delà du seuil de {SEUIL_BRUIT_CODE_PUBLIC} retenu.",
+                "Certains domaines — ceux réservés à la documentation, ou ceux de très grands "
+                "services — apparaissent dans des millions de fichiers publics. Le rapprochement "
+                "avec un mot-clé d'identifiant n'y signifie plus rien, et prétendre le contraire "
+                "produirait une alerte spectaculaire mais vide.",
+                "Pour ce domaine, rechercher plutôt des chaînes qui vous sont propres : "
+                "préfixes de clés, noms d'hôtes internes, identifiants de projet.",
+                [refs.CIS_INVENTAIRE],
+            )
+        elif suspects:
+            total = sum(p["total"] for p in suspects)
+            exemples = "; ".join(
+                f"{e['depot']}/{e['chemin']}"
+                for p in suspects
+                for e in p["emplacements"][:3]
+            )
+            run_.add(
+                "BREACH_PUBLIC_CODE_SECRET", Severity.ELEVE,
+                f"{total} fichier(s) publics mentionnent le domaine à côté d'un mot-clé "
+                "d'identifiant",
+                f"Mots-clés concernés : {', '.join(p['mot_cle'] for p in suspects)}. "
+                f"Exemples d'emplacements : {exemples[:400]}.",
+                "Des fichiers publiquement accessibles citent votre domaine à proximité de "
+                "mots comme « password » ou « api_key ». C'est la façon la plus courante dont "
+                "une clé d'API ou un mot de passe se retrouve exposé : un fichier de "
+                "configuration versionné par inadvertance. Ce constat est une piste à "
+                "vérifier, pas une preuve : la cooccurrence peut être parfaitement anodine. "
+                "DomainExposure ne télécharge jamais le contenu de ces fichiers, afin de ne "
+                "pas détenir lui-même l'identifiant qu'il signale.",
+                "Ouvrir les emplacements listés. Si un identifiant est réellement exposé : le "
+                "révoquer immédiatement — le retirer du dépôt ne suffit pas, l'historique Git "
+                "le conserve — puis mettre en place une détection de secrets avant commit.",
+                [refs.ANSSI_MOTS_DE_PASSE, refs.CIS_CONTROLS],
+                {"pistes": [{k: v for k, v in p.items() if k != "emplacements"}
+                            for p in suspects]},
+            )
+        elif mentions and mentions["total"]:
+            run_.add(
+                "BREACH_PUBLIC_CODE_MENTIONS", Severity.INFO,
+                f"{mentions['total']} fichier(s) publics mentionnent le domaine",
+                f"Aucun ne le cite à côté d'un mot-clé d'identifiant "
+                f"({', '.join(MOTS_CLES_IDENTIFIANTS)}).",
+                "Votre domaine apparaît dans du code publiquement accessible — documentation, "
+                "configuration d'exemple, dépendances. C'est banal, mais cela confirme que "
+                "votre infrastructure est connue et nommée en dehors de chez vous.",
+                "Vérifier périodiquement qu'aucun identifiant ne se glisse dans ces fichiers.",
+                [refs.CIS_INVENTAIRE],
             )
 
     run_.data["sources_desactivees"] = desactivees

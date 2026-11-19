@@ -143,6 +143,7 @@ Tous les réglages se font dans `.env` (modèle commenté dans `.env.example`).
 | `AUDIT_RETENTION_DAYS` | `365` | Conservation du journal d'audit |
 | `DNS_BACKEND` | `auto` | `system`, `doh` ou `auto` (bascule automatique) |
 | `HTTP_TIMEOUT`, `HTTP_RETRIES` | `15.0`, `3` | Délais et nouvelles tentatives |
+| `RATE_LIMITS_ENABLED` | `true` | Délai minimal entre deux appels à une même source. À ne désactiver qu'en test : il protège les quotas des fournisseurs |
 | `BRAND_NAME`, `BRAND_COLOR` | `DomainExposure`, bleu | Identité affichée |
 | `BRAND_LOGO_PATH`, `BRAND_FOOTER` | — | Logo incorporé et mention de pied de page |
 | `SCHEDULER_ENABLED` | `true` | Analyses planifiées du portefeuille |
@@ -163,6 +164,8 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 | Have I Been Pwned | `HIBP_API_KEY` | Payant | <https://haveibeenpwned.com/API/Key> | Recherche des **comptes du domaine** présents dans des fuites, et **journaux d'infostealers** (palier « Pro »). Sans clé, les fuites ayant touché le site restent listées via l'endpoint public. |
 | Shodan | `SHODAN_API_KEY` | Payant (licence à vie fréquemment en promotion) | <https://account.shodan.io> | Détail par service. Sans clé, **Shodan InternetDB** fournit déjà ports, CVE connues et étiquettes, gratuitement et sans authentification. |
 | VirusTotal | `VIRUSTOTAL_API_KEY` | Gratuit (4 requêtes/minute) | <https://www.virustotal.com/gui/my-apikey> | Réputation du domaine auprès de dizaines de moteurs |
+| Google Safe Browsing | `SAFEBROWSING_API_KEY` | Gratuit | <https://console.cloud.google.com/apis/library/safebrowsing.googleapis.com> | La liste que consultent Chrome, Firefox et Safari : un client peut vérifier le constat lui-même en trois secondes |
+| GitHub | `GITHUB_SEARCH_TOKEN` | Gratuit | <https://github.com/settings/tokens> | Recherche de code public : fichiers citant votre domaine à côté de mots-clés d'identifiants |
 | AbuseIPDB | `ABUSEIPDB_API_KEY` | Gratuit (1 000 requêtes/jour) | <https://www.abuseipdb.com/account/api> | Signalements d'abus sur les adresses IP |
 | URLhaus (abuse.ch) | `URLHAUS_AUTH_KEY` | Gratuit, **désormais obligatoire** | <https://auth.abuse.ch> | URL de distribution de logiciels malveillants hébergées sur le domaine |
 | LeakCheck | `LEAKCHECK_API_KEY` | Payant | <https://leakcheck.io> | Seconde base de fuites, en métadonnées |
@@ -190,7 +193,7 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 
 | # | Module | Poids | Sources | Clé requise |
 |---|---|---:|---|---|
-| 1 | Fuites de données | 15 | Have I Been Pwned (fuites, Domain Search, journaux d'infostealers), LeakCheck, Intelligence X | non (partiel) |
+| 1 | Fuites de données | 15 | Have I Been Pwned (fuites, Domain Search, journaux d'infostealers), recherche de code public GitHub, LeakCheck, Intelligence X | non (partiel) |
 | 2 | Ransomware | 10 | ransomware.live | non |
 | 3 | Hygiène email | 20 | DNS (MX, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI) | non |
 | 4 | Hygiène DNS | 10 | RDAP (expiration et verrou du domaine), DNS (DNSSEC, NS, CAA), empreintes de reprise de sous-domaine | non |
@@ -198,7 +201,28 @@ proprement, l'indique dans le rapport, et sort du calcul du score.
 | 6 | Services exposés | 15 | Shodan InternetDB, API Shodan, RDAP des registres d'adresses | non (partiel) |
 | 7 | TLS & en-têtes HTTP | 15 | Poignée de main TLS, requête web standard | non |
 | 8 | Typosquatting | 5 | dnstwist + résolution DNS | non |
-| 9 | Réputation | 5 | VirusTotal, URLhaus, AbuseIPDB | oui |
+| 9 | Réputation | 5 | VirusTotal, URLhaus, AbuseIPDB, Google Safe Browsing | oui |
+
+### Secrets dans le code public (module 1)
+
+La façon la plus courante dont une clé d'API fuite est un fichier de configuration
+versionné par inadvertance. Le module interroge la recherche de code GitHub pour les
+fichiers publics citant votre domaine à côté de « password » ou « api_key ».
+
+**Le contenu des fichiers n'est jamais récupéré.** L'en-tête `text-match`, qui
+renverrait les extraits contenant l'identifiant, n'est pas utilisé : signaler une
+fuite ne doit pas conduire l'outil à détenir lui-même le secret. Seuls le dépôt, le
+chemin et le lien sont conservés — de quoi aller vérifier.
+
+**Un seuil de bruit à 200 résultats.** Mesuré en conditions réelles : la requête
+`"example.com" password` renvoie plus de **onze millions** de fichiers, pour la simple
+raison que ce domaine sert d'exemple dans la documentation du monde entier. Au-delà du
+seuil, le constat devient informatif et ne pénalise pas le score : annoncer onze
+millions de fichiers comme une fuite d'identifiants serait spectaculaire et vide.
+
+> La variable s'appelle `GITHUB_SEARCH_TOKEN` et non `GITHUB_TOKEN` : cette dernière
+> est exportée par beaucoup d'environnements pour la CLI `gh`, et l'outil capterait
+> alors silencieusement un jeton que vous ne lui avez pas destiné.
 
 ### Journaux d'infostealers (module 1)
 
