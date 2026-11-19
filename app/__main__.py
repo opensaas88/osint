@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 from .config import get_settings
 
@@ -65,6 +66,59 @@ async def _analyse(domain: str) -> int:
     return 0
 
 
+async def _export(cible: str) -> int:
+    """Range le rapport d'une analyse dans le répertoire de suivi interne."""
+    from .report.html import render_html
+    from .report.pdf import PdfUnavailable, render_pdf
+    from .storage import Store
+    from .validation import InvalidDomain, normalize_domain
+
+    settings = get_settings()
+    store = Store(settings.db_path)
+    await store.init()
+
+    rapport = await store.get_report(cible)
+    if rapport is None:
+        # Pas un identifiant : on tente le domaine, et on prend sa dernière analyse.
+        try:
+            domaine = normalize_domain(cible).ascii
+        except InvalidDomain as exc:
+            print(f"Ni identifiant d'analyse, ni domaine exploitable : {exc.reason}")
+            return 2
+        analyses = await store.list_analyses(domaine, limit=1)
+        if not analyses:
+            print(f"Aucune analyse enregistrée pour {domaine}.")
+            return 2
+        rapport = await store.get_report(analyses[0]["id"])
+    if rapport is None:  # pragma: no cover - incohérence de base
+        print("Analyse introuvable.")
+        return 2
+
+    domaine = rapport.get("domain", "inconnu")
+    horodatage = str(rapport.get("started_at") or "")[:16].replace(":", "").replace("T", "-")
+    dossier = Path(settings.reports_dir) / domaine
+    dossier.mkdir(parents=True, exist_ok=True)
+    base = dossier / f"{horodatage}-rapport"
+
+    historique = await store.score_history(domaine)
+    base.with_suffix(".html").write_text(
+        render_html(rapport, settings, historique), encoding="utf-8"
+    )
+    print(f"→ {base.with_suffix('.html')}")
+
+    try:
+        base.with_suffix(".pdf").write_bytes(render_pdf(rapport, settings, historique))
+        print(f"→ {base.with_suffix('.pdf')}")
+    except PdfUnavailable as exc:
+        print(f"PDF non généré : {exc}")
+
+    print(
+        "\nCe rapport décrit la surface d'attaque de l'organisation : traitez-le comme "
+        "un document confidentiel. Le répertoire de suivi est exclu du dépôt."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     command = argv[0] if argv else "serve"
@@ -75,13 +129,22 @@ def main(argv: list[str] | None = None) -> int:
     if command == "purge":
         asyncio.run(_purge())
         return 0
+    if command == "export":
+        if len(argv) < 2:
+            print("Usage : python -m app export <identifiant d'analyse | domaine>")
+            return 2
+        return asyncio.run(_export(argv[1]))
+
     if command == "analyse":
         if len(argv) < 2:
             print("Usage : python -m app analyse <domaine>")
             return 2
         return asyncio.run(_analyse(argv[1]))
 
-    print("Commandes disponibles : serve (défaut), purge, analyse <domaine>")
+    print(
+        "Commandes disponibles : serve (défaut), purge, analyse <domaine>, "
+        "export <identifiant | domaine>"
+    )
     return 2
 
 

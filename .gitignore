@@ -7,5 +7,9 @@ __pycache__/
 /data/
 /reports/
 /rapports/
+# Suivi interne : seule la convention d'usage est versionnée, jamais les rapports.
+/suivi/*
+!/suivi/README.md
+!/suivi/.gitkeep
 .pytest_cache/
 .ruff_cache/

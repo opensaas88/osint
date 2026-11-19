@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     crtsh_timeout: float = 60.0
     user_agent: str = "DomainExposure/1.0 (outil d'audit passif; +https://localhost)"
 
+    # --- Suivi interne ---
+    # Répertoire où « python -m app export » range les rapports, classés par
+    # domaine puis par date. Son contenu est exclu du dépôt : un rapport décrit
+    # une surface d'attaque et se traite comme un document confidentiel.
+    reports_dir: Path = Path("suivi")
+
     # --- Marque blanche ---
     # La marque habille l'en-tête et les accents. Elle ne touche jamais aux
     # couleurs de gravité : un constat critique reste rouge chez tout le monde.

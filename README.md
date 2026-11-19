@@ -128,6 +128,10 @@ python -m app analyse exemple.fr # analyse ponctuelle, résultat affiché au ter
 python -m app purge              # purge le cache expiré et le journal d'audit
 ```
 
+```bash
+python -m app export exemple.fr  # range le rapport dans le suivi interne
+```
+
 ---
 
 ## Configuration
@@ -139,6 +143,7 @@ Tous les réglages se font dans `.env` (modèle commenté dans `.env.example`).
 | `HOST`, `PORT` | `127.0.0.1`, `8080` | Écoute du serveur |
 | `OPERATOR` | `operateur-local` | Identité inscrite dans le journal d'audit |
 | `DB_PATH` | `data/domainexposure.db` | Base SQLite |
+| `REPORTS_DIR` | `suivi` | Répertoire d'export des rapports, exclu du dépôt |
 | `CACHE_TTL_HOURS` | `24` | Durée de vie du cache des réponses d'API |
 | `AUDIT_RETENTION_DAYS` | `365` | Conservation du journal d'audit |
 | `DNS_BACKEND` | `auto` | `system`, `doh` ou `auto` (bascule automatique) |
@@ -416,6 +421,34 @@ l'exécution se poursuit.
 > plusieurs workers uvicorn, les analyses seraient dupliquées : la configuration livrée
 > n'en utilise qu'un, et `SCHEDULER_ENABLED=false` désactive l'ordonnanceur sur les
 > processus supplémentaires.
+
+### Suivi interne
+
+`python -m app export <identifiant | domaine>` range le rapport d'une analyse —
+HTML autonome et PDF — dans un répertoire classé par domaine puis par date :
+
+```
+suivi/
+├── README.md                     ← versionné : la convention d'usage
+└── hci-pve.cloud/
+    ├── 2026-11-19-0636-rapport.html
+    └── 2026-11-19-0636-rapport.pdf   ← jamais versionnés
+```
+
+Avec un domaine, c'est la dernière analyse qui est exportée ; avec un identifiant,
+celle-là précisément.
+
+**Le contenu de ce répertoire est exclu du dépôt, et ce n'est pas un oubli.** Un
+rapport d'exposition est le document qu'un attaquant rédigerait avant de viser la
+cible : enregistrements de messagerie défaillants, échéances, adresses, serveurs.
+Publié dans un dépôt — même retiré ensuite, l'historique Git le conserve — il
+devient un mode d'emploi permanent.
+
+Seule la convention voyage avec le code, dans `suivi/README.md`, qui décrit aussi
+les deux conditions à réunir si vous choisissez malgré tout de versionner ces
+rapports : un dépôt **privé**, et un chiffrement au repos (`git-crypt`, `age`).
+
+Le répertoire se change avec `REPORTS_DIR`.
 
 ### Historique et comparaison
 
